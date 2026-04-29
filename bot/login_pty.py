@@ -52,11 +52,12 @@ def _extract_url(buf: bytes) -> str | None:
         pos = cm.end()
     return b"".join(pieces).decode(errors="replace").rstrip(".,)\"' ")
 
-URL_TIMEOUT = 30.0
-PROMPT_TIMEOUT = 30.0
-CODE_TIMEOUT = 600.0
-CONFIRM_TIMEOUT = 60.0
-POLL_INTERVAL = 1.0
+URL_TIMEOUT = 10.0
+PROMPT_TIMEOUT = 10.0
+CODE_TIMEOUT = 600.0  # User-reply window stays generous.
+CONFIRM_TIMEOUT = 10.0
+POLL_INTERVAL = 0.5
+_OAUTH_ERROR_RE = re.compile(rb"OAuth error|status code \d+|Press Enter to retry", re.IGNORECASE)
 
 
 class LoginError(RuntimeError):
@@ -207,7 +208,9 @@ async def run_login(
 
         reader.advance_to_end()
         try:
-            os.write(master, (code.strip() + "\n").encode())
+            # The CLI's input box (Ink-based) submits on \r, not \n; \n is
+            # accepted as a paste-internal newline and never submits.
+            os.write(master, (code.strip() + "\r").encode())
         except OSError as e:
             raise LoginError(f"could not write code to pty: {e}") from e
 
@@ -217,13 +220,18 @@ async def run_login(
             status = await auth_status(claude_bin)
             if status.get("loggedIn"):
                 return
+            cleaned = reader.cleaned()
+            if _OAUTH_ERROR_RE.search(cleaned):
+                # Fail fast: the CLI rejected the code; no point polling status.
+                tail = cleaned[-300:].decode(errors="replace").strip()
+                raise LoginError(f"code rejected: {tail}")
             if proc.returncode is not None:
-                tail = reader.cleaned()[-500:].decode(errors="replace")
+                tail = cleaned[-300:].decode(errors="replace").strip()
                 raise LoginError(
                     f"claude exited without auth (rc={proc.returncode}); tail: {tail!r}",
                 )
             if asyncio.get_running_loop().time() >= deadline:
-                tail = reader.cleaned()[-500:].decode(errors="replace")
+                tail = cleaned[-300:].decode(errors="replace").strip()
                 raise LoginError(f"auth confirmation timed out; tail: {tail!r}")
     finally:
         reader.close()

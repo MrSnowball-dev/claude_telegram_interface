@@ -262,25 +262,35 @@ class Handlers:
             )
             return
 
-        await self._send(
-            chat_id, t("login_start", user.lang), thread_id=user.system_thread_id,
-        )
-        queue: asyncio.Queue[str] = asyncio.Queue()
+        # One status message that the whole flow edits in place.
         sys_thread = user.system_thread_id
+        initial = await self._send(
+            chat_id, t("login_start", user.lang), thread_id=sys_thread,
+        )
+        msg_id = int(initial["message_id"]) if initial else None
+
+        queue: asyncio.Queue[str] = asyncio.Queue()
         home = user_home_path(self.settings.data_dir, user.user_id)
 
+        async def update(text: str, *, reply_markup: dict | None = None) -> None:
+            if msg_id is not None:
+                await self._edit(chat_id, msg_id, text, reply_markup=reply_markup)
+            else:
+                await self._send(
+                    chat_id, text, thread_id=sys_thread, reply_markup=reply_markup,
+                )
+
         async def send_url(url: str) -> None:
-            await self._send(
-                chat_id, t("login_url", user.lang, url=url), thread_id=sys_thread,
-            )
+            keyboard = {"inline_keyboard": [[
+                {"text": t("login_url_button", user.lang), "url": url},
+            ]]}
+            await update(t("login_url_text", user.lang), reply_markup=keyboard)
 
         async def await_code(timeout: float) -> str:
             return await asyncio.wait_for(queue.get(), timeout=timeout)
 
         async def on_code_received() -> None:
-            await self._send(
-                chat_id, t("login_checking", user.lang), thread_id=sys_thread,
-            )
+            await update(t("login_checking", user.lang))
 
         async def runner() -> None:
             try:
@@ -293,22 +303,15 @@ class Handlers:
                 )
                 await self.state.set_user_token(user.user_id, token)
                 self._auth_cache[user.user_id] = (time.monotonic(), True)
-                # Update any registry entries for this user with the new token.
                 for sess in list(self.registry.iter_user(user.user_id)):
                     sess.oauth_token = token
-                await self._send(chat_id, t("login_done", user.lang), thread_id=sys_thread)
+                await update(t("login_done", user.lang))
             except LoginError as e:
                 log.warning("login failed: %s", e)
-                await self._send(
-                    chat_id, t("login_failed", user.lang, detail=str(e)),
-                    thread_id=sys_thread,
-                )
+                await update(t("login_failed", user.lang, detail=str(e)))
             except Exception as e:
                 log.exception("login flow crashed")
-                await self._send(
-                    chat_id, t("login_failed", user.lang, detail=repr(e)),
-                    thread_id=sys_thread,
-                )
+                await update(t("login_failed", user.lang, detail=repr(e)))
             finally:
                 self._pending_logins.pop(user.user_id, None)
 
@@ -491,15 +494,43 @@ class Handlers:
             log.exception("turn crashed")
             await streamer.finalize(t("err_generic", lang, detail=repr(e)))
 
-    # ---- send helper ------------------------------------------------------
+    # ---- send helpers -----------------------------------------------------
 
-    async def _send(self, chat_id: int, text: str, *, thread_id: int | None = None) -> None:
+    async def _send(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        thread_id: int | None = None,
+        reply_markup: dict | None = None,
+    ) -> dict | None:
         try:
-            await self.bot_api.send_message(
+            return await self.bot_api.send_message(
                 chat_id=chat_id, text=text, message_thread_id=thread_id,
+                reply_markup=reply_markup,
             )
         except BotAPIError as e:
             log.warning("send failed: %s", e)
+            return None
+
+    async def _edit(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        *,
+        reply_markup: dict | None = None,
+    ) -> None:
+        try:
+            await self.bot_api.edit_message_text(
+                chat_id=chat_id, message_id=message_id, text=text,
+                reply_markup=reply_markup,
+            )
+        except BotAPIError as e:
+            # 400 "message is not modified" means the new text matches the old
+            # exactly — harmless; ignore.
+            if "not modified" not in e.description.lower():
+                log.warning("edit failed: %s", e)
 
 
 def _extract_thread_id(event) -> int | None:

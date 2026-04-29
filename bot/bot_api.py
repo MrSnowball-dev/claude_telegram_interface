@@ -92,6 +92,7 @@ class BotAPI:
         text: str,
         message_thread_id: int | None = None,
         parse_mode: str | None = None,
+        reply_markup: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Used as a Bot-API fallback when we want to commit inside a forum topic in a private chat;
         Telethon's MTProto path doesn't accept message_thread_id for private chats today."""
@@ -100,4 +101,24 @@ class BotAPI:
             payload["message_thread_id"] = message_thread_id
         if parse_mode:
             payload["parse_mode"] = parse_mode
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         return await self._call("sendMessage", payload)
+
+    async def edit_message_text(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        parse_mode: str | None = None,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | bool:
+        payload: dict[str, Any] = {
+            "chat_id": chat_id, "message_id": message_id, "text": text,
+        }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        return await self._call("editMessageText", payload)

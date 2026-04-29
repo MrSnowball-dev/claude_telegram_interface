@@ -208,9 +208,15 @@ async def run_login(
 
         reader.advance_to_end()
         try:
-            # The CLI's input box (Ink-based) submits on \r, not \n; \n is
-            # accepted as a paste-internal newline and never submits.
-            os.write(master, (code.strip() + "\r").encode())
+            # Two writes: paste the code, then send \r as a separate keystroke.
+            # The CLI's Ink input runs paste-detection: when many chars arrive
+            # in one read(), \r in the same chunk is treated as a paste-internal
+            # newline rather than submit, especially once the input wraps onto
+            # a second visual line. Splitting the writes guarantees \r is seen
+            # as a fresh keypress.
+            os.write(master, code.strip().encode())
+            await asyncio.sleep(0.15)
+            os.write(master, b"\r")
         except OSError as e:
             raise LoginError(f"could not write code to pty: {e}") from e
 

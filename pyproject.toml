@@ -1,0 +1,31 @@
+[project]
+name = "tg_interface"
+version = "0.1.0"
+description = "Telegram bridge to local Claude Code sessions"
+requires-python = ">=3.11"
+dependencies = [
+    "telethon>=1.36",
+    "aiohttp>=3.10",
+    "aiosqlite>=0.20",
+]
+
+[project.scripts]
+tg-interface = "bot.main:run"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["bot*"]
+
+[tool.setuptools.package-data]
+bot = ["locales/*.toml"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501"]

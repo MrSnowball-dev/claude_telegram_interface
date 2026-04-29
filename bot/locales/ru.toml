@@ -1,0 +1,38 @@
+[meta]
+name = "Русский"
+
+[strings]
+welcome = "Привет. Я мост между Telegram и Claude Code на этой машине.\n\n/login — войти в Claude, /cd — выбрать рабочую папку, /new — начать сессию."
+not_allowed = "Вы не в списке разрешённых пользователей."
+help = "Команды:\n/new — начать новую сессию Claude (открывает топик)\n/cd <путь> — задать рабочую папку для новых сессий\n/login — авторизовать Claude на этом хосте\n/perm <bypass|default|plan|acceptedits> — режим разрешений для новых сессий\n/lang <en|ru|uk> — сменить язык\n/help — это сообщение"
+
+cd_ok = "Рабочая папка: {path}"
+cd_bad = "Путь недоступен: {path}"
+cd_missing = "Использование: /cd <абсолютный-путь>"
+
+session_new = "Новая сессия в {cwd}"
+session_none = "Нет активной сессии. Используйте /new."
+session_busy = "Предыдущий ход ещё выполняется, сообщение в очереди."
+
+login_start = "Запуск входа в Claude…"
+login_url = "Откройте эту ссылку, чтобы войти:\n{url}\n\nЗатем отправьте мне код."
+login_done = "Вход выполнен."
+login_bad = "Неверный код, попробуйте ещё раз (осталось попыток: {left})."
+login_failed = "Не удалось войти: {detail}"
+login_already = "У вас уже идёт процесс входа."
+
+perm_set = "Режим разрешений для новых сессий: {mode}"
+perm_bad = "Неизвестный режим. Доступны: bypass, default, plan, acceptedits"
+
+lang_set = "Язык: {name}"
+lang_bad = "Неизвестный язык. Доступны: {available}"
+
+err_generic = "Что-то пошло не так: {detail}"
+turn_crashed = "Сессия Claude упала; перезапускаю и повторяю ход."
+turn_failed = "Ход не удался даже после повтора."
+output_too_large = "Вывод Claude превысил буфер; сессия перезапущена."
+auth_required = "Claude не авторизован на этом хосте. Используйте /login."
+
+tool_call = "▸ {tool}: {summary}"
+thinking = "[размышляю…]"
+streaming_truncated = "(стриминг обрезан; ниже — финальное сообщение)"

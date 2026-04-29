@@ -1,0 +1,38 @@
+[meta]
+name = "English"
+
+[strings]
+welcome = "Hi. I bridge Telegram to Claude Code on this machine.\n\nUse /login to authenticate, /cd to choose a working directory, /new to start a session."
+not_allowed = "You are not on the allow-list."
+help = "Commands:\n/new — start a new Claude session (opens a topic)\n/cd <path> — set working directory for new sessions\n/login — authenticate Claude on this host\n/perm <bypass|default|plan|acceptedits> — permission mode for new sessions\n/lang <en|ru|uk> — override language\n/help — this message"
+
+cd_ok = "Working directory set to {path}"
+cd_bad = "Path not accessible: {path}"
+cd_missing = "Usage: /cd <absolute-path>"
+
+session_new = "New session in {cwd}"
+session_none = "No active session. Use /new to start one."
+session_busy = "Previous turn still running, message queued."
+
+login_start = "Starting Claude login…"
+login_url = "Open this URL to authenticate:\n{url}\n\nThen reply with the code."
+login_done = "Logged in."
+login_bad = "Invalid code, try again ({left} attempts left)."
+login_failed = "Login failed: {detail}"
+login_already = "A login is already in progress for you."
+
+perm_set = "Permission mode for new sessions: {mode}"
+perm_bad = "Unknown mode. Use one of: bypass, default, plan, acceptedits"
+
+lang_set = "Language set to {name}"
+lang_bad = "Unknown language code. Available: {available}"
+
+err_generic = "Something went wrong: {detail}"
+turn_crashed = "Claude session crashed; resuming and retrying."
+turn_failed = "Turn failed after retry."
+output_too_large = "Claude output exceeded buffer; session restarted."
+auth_required = "Claude is not authenticated on this host. Use /login."
+
+tool_call = "▸ {tool}: {summary}"
+thinking = "[thinking…]"
+streaming_truncated = "(streaming truncated; final message below)"

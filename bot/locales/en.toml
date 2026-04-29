@@ -32,9 +32,23 @@ system_topic_name = "claude · system"
 
 perm_set = "Permission mode for new sessions: {mode}"
 perm_bad = "Unknown mode. Use one of: bypass, default, plan, acceptedits"
+perm_pick = "Pick a permission mode for new sessions:"
+perm_label_acceptedits = "Accept Edits"
+perm_label_plan = "Plan Only"
+perm_label_bypass = "Bypass All"
+perm_label_default = "Default (ask)"
 
 lang_set = "Language set to {name}"
 lang_bad = "Unknown language code. Available: {available}"
+lang_pick = "Pick a language:"
+
+cmd_new_desc = "Start a new Claude session"
+cmd_cd_desc = "Set working directory for new sessions"
+cmd_login_desc = "Authenticate Claude on this host"
+cmd_logout_desc = "Sign out of Claude"
+cmd_perm_desc = "Permission mode for new sessions"
+cmd_lang_desc = "Change interface language"
+cmd_help_desc = "Show help"
 
 err_generic = "Something went wrong: {detail}"
 turn_crashed = "Claude session crashed; resuming and retrying."

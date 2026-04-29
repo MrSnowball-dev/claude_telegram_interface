@@ -32,9 +32,23 @@ system_topic_name = "claude · система"
 
 perm_set = "Режим разрешений для новых сессий: {mode}"
 perm_bad = "Неизвестный режим. Доступны: bypass, default, plan, acceptedits"
+perm_pick = "Выберите режим разрешений для новых сессий:"
+perm_label_acceptedits = "Принимать правки"
+perm_label_plan = "Только планирование"
+perm_label_bypass = "Без ограничений"
+perm_label_default = "По умолчанию (спрашивать)"
 
 lang_set = "Язык: {name}"
 lang_bad = "Неизвестный язык. Доступны: {available}"
+lang_pick = "Выберите язык:"
+
+cmd_new_desc = "Начать новую сессию Claude"
+cmd_cd_desc = "Задать рабочую папку для новых сессий"
+cmd_login_desc = "Авторизовать Claude на этом хосте"
+cmd_logout_desc = "Выйти из Claude"
+cmd_perm_desc = "Режим разрешений для новых сессий"
+cmd_lang_desc = "Сменить язык интерфейса"
+cmd_help_desc = "Показать справку"
 
 err_generic = "Что-то пошло не так: {detail}"
 turn_crashed = "Сессия Claude упала; перезапускаю и повторяю ход."

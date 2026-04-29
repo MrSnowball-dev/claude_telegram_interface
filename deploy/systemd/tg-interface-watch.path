@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch tg-interface source files
+
+[Path]
+PathModified=/opt/tg_interface/bot
+PathModified=/opt/tg_interface/bot/locales
+Unit=tg-interface-watch.service
+
+[Install]
+WantedBy=multi-user.target

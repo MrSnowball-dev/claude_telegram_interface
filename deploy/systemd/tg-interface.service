@@ -1,0 +1,19 @@
+[Unit]
+Description=Telegram bridge to Claude Code sessions
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/tg_interface
+EnvironmentFile=/opt/tg_interface/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/tg_interface/.venv/bin/python -m bot
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

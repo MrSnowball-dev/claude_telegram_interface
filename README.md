@@ -40,6 +40,21 @@ cp .env.example .env
 .venv/bin/python -m bot
 ```
 
+## Run as a systemd service
+
+Three units in `deploy/systemd/`:
+
+- `tg-interface.service` — the bot itself (`Restart=always`, env from `/opt/tg_interface/.env`).
+- `tg-interface-watch.path` — watches `bot/` and `bot/locales/` for changes.
+- `tg-interface-watch.service` — oneshot, sleeps 3 s for debounce, then restarts the bot. A burst of file changes during the sleep collapses to one restart, so editing rapidly doesn't thrash the process.
+
+Install and enable:
+
+```sh
+sudo deploy/install.sh
+journalctl -u tg-interface -f
+```
+
 ### Environment variables
 
 | Var | Required | Purpose |

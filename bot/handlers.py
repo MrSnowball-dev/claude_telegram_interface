@@ -74,6 +74,7 @@ class Handlers:
 
     def register(self) -> None:
         self.client.add_event_handler(self._on_message, events.NewMessage(incoming=True))
+        self.client.add_event_handler(self._on_callback, events.CallbackQuery)
 
     # ---- main dispatch ----------------------------------------------------
 
@@ -112,6 +113,54 @@ class Handlers:
             return
 
         await self._route_to_session(event, user, text)
+
+    # ---- callback queries -------------------------------------------------
+
+    async def _on_callback(self, event: events.CallbackQuery.Event) -> None:
+        sender = await event.get_sender()
+        if sender is None or sender.bot:
+            with contextlib.suppress(Exception):
+                await event.answer()
+            return
+        user_id = int(sender.id)
+        if user_id not in self.settings.allowed_user_ids:
+            with contextlib.suppress(Exception):
+                await event.answer()
+            return
+
+        user = await self.state.get_or_create_user(
+            user_id, pick_lang(getattr(sender, "lang_code", None)), self.settings.default_cwd,
+        )
+        data = event.data.decode() if isinstance(event.data, bytes) else str(event.data)
+        chat_id = int(event.chat_id)
+        message_id = int(event.message_id)
+        empty_markup = {"inline_keyboard": []}
+
+        try:
+            if data.startswith("lang:"):
+                code = data[5:]
+                langs = available_languages()
+                if code in langs:
+                    await self.state.set_user_lang(user_id, code)
+                    with contextlib.suppress(BotAPIError):
+                        await self.bot_api.edit_message_text(
+                            chat_id=chat_id, message_id=message_id,
+                            text=t("lang_set", code, name=langs[code]),
+                            reply_markup=empty_markup,
+                        )
+            elif data.startswith("perm:"):
+                mode = data[5:]
+                if any(mode == m for m, _ in self._PERM_MENU):
+                    await self.state.set_user_perm(user_id, mode)
+                    with contextlib.suppress(BotAPIError):
+                        await self.bot_api.edit_message_text(
+                            chat_id=chat_id, message_id=message_id,
+                            text=t("perm_set", user.lang, mode=mode),
+                            reply_markup=empty_markup,
+                        )
+        finally:
+            with contextlib.suppress(Exception):
+                await event.answer()
 
     # ---- commands ---------------------------------------------------------
 
@@ -184,36 +233,65 @@ class Handlers:
             thread_id=user.system_thread_id,
         )
 
+    _PERM_MENU: tuple[tuple[str, str], ...] = (
+        ("acceptEdits", "perm_label_acceptedits"),
+        ("plan", "perm_label_plan"),
+        ("bypassPermissions", "perm_label_bypass"),
+        ("default", "perm_label_default"),
+    )
+
     async def _cmd_perm(self, event, user: User, rest: str) -> None:
-        mode = normalize_perm_mode(rest)
-        if mode is None:
+        if rest:
+            mode = normalize_perm_mode(rest)
+            if mode is None:
+                await self._send(
+                    int(event.chat_id), t("perm_bad", user.lang),
+                    thread_id=user.system_thread_id,
+                )
+                return
+            await self.state.set_user_perm(user.user_id, mode)
             await self._send(
-                int(event.chat_id), t("perm_bad", user.lang),
+                int(event.chat_id),
+                t("perm_set", user.lang, mode=mode),
                 thread_id=user.system_thread_id,
             )
             return
-        await self.state.set_user_perm(user.user_id, mode)
+
+        keyboard = {"inline_keyboard": [
+            [{"text": t(label_key, user.lang), "callback_data": f"perm:{mode}"}]
+            for mode, label_key in self._PERM_MENU
+        ]}
         await self._send(
-            int(event.chat_id),
-            t("perm_set", user.lang, mode=mode),
-            thread_id=user.system_thread_id,
+            int(event.chat_id), t("perm_pick", user.lang),
+            thread_id=user.system_thread_id, reply_markup=keyboard,
         )
 
     async def _cmd_lang(self, event, user: User, rest: str) -> None:
         langs = available_languages()
-        code = rest.lower().split("-", 1)[0]
-        if code not in langs:
+        if rest:
+            code = rest.lower().split("-", 1)[0]
+            if code not in langs:
+                await self._send(
+                    int(event.chat_id),
+                    t("lang_bad", user.lang, available=", ".join(sorted(langs))),
+                    thread_id=user.system_thread_id,
+                )
+                return
+            await self.state.set_user_lang(user.user_id, code)
             await self._send(
                 int(event.chat_id),
-                t("lang_bad", user.lang, available=", ".join(sorted(langs))),
+                t("lang_set", code, name=langs[code]),
                 thread_id=user.system_thread_id,
             )
             return
-        await self.state.set_user_lang(user.user_id, code)
+
+        keyboard = {"inline_keyboard": [
+            [{"text": name, "callback_data": f"lang:{code}"}]
+            for code, name in sorted(langs.items())
+        ]}
         await self._send(
-            int(event.chat_id),
-            t("lang_set", code, name=langs[code]),
-            thread_id=user.system_thread_id,
+            int(event.chat_id), t("lang_pick", user.lang),
+            thread_id=user.system_thread_id, reply_markup=keyboard,
         )
 
     async def _cmd_new(self, event, user: User) -> None:
@@ -453,6 +531,7 @@ class Handlers:
     ) -> None:
         accumulated: list[str] = []
         result_text: list[str] = [""]
+        first_text_seen = asyncio.Event()
 
         async def send_draft(text: str) -> None:
             if not text:
@@ -470,10 +549,31 @@ class Handlers:
 
         streamer = DraftStreamer(send_draft, commit)
 
+        async def typing_pinger() -> None:
+            # Telegram clears the typing indicator after ~5s, so refresh every 4.
+            # Stop as soon as the first text delta lands — the animated draft
+            # itself signals activity from then on.
+            try:
+                while not first_text_seen.is_set():
+                    with contextlib.suppress(BotAPIError):
+                        await self.bot_api.send_chat_action(
+                            chat_id=chat_id, action="typing",
+                            message_thread_id=thread_id,
+                        )
+                    try:
+                        await asyncio.wait_for(first_text_seen.wait(), timeout=4.0)
+                    except TimeoutError:
+                        continue
+            except asyncio.CancelledError:
+                pass
+
+        ping_task = asyncio.create_task(typing_pinger())
+
         async def on_event(evt: SemanticEvent) -> None:
             if isinstance(evt, TurnStarted):
                 return
             if isinstance(evt, TextDelta):
+                first_text_seen.set()
                 accumulated.append(evt.text)
                 streamer.append(evt.text)
                 return
@@ -488,6 +588,7 @@ class Handlers:
                 streamer.append(line)
                 return
             if isinstance(evt, TurnEnded):
+                first_text_seen.set()
                 if evt.is_error:
                     err = t("err_generic", lang, detail=evt.error or "?")
                     await streamer.finalize(err)
@@ -500,6 +601,11 @@ class Handlers:
         except Exception as e:
             log.exception("turn crashed")
             await streamer.finalize(t("err_generic", lang, detail=repr(e)))
+        finally:
+            first_text_seen.set()
+            ping_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await ping_task
 
     # ---- send helpers -----------------------------------------------------
 

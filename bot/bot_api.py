@@ -105,6 +105,40 @@ class BotAPI:
             payload["reply_markup"] = reply_markup
         return await self._call("sendMessage", payload)
 
+    async def set_my_commands(
+        self,
+        *,
+        commands: list[dict[str, str]],
+        scope: dict[str, Any] | None = None,
+        language_code: str | None = None,
+    ) -> bool:
+        payload: dict[str, Any] = {"commands": commands}
+        if scope is not None:
+            payload["scope"] = scope
+        if language_code:
+            payload["language_code"] = language_code
+        return bool(await self._call("setMyCommands", payload))
+
+    async def answer_callback_query(
+        self, *, callback_query_id: str, text: str | None = None,
+    ) -> bool:
+        payload: dict[str, Any] = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+        return bool(await self._call("answerCallbackQuery", payload))
+
+    async def send_chat_action(
+        self,
+        *,
+        chat_id: int,
+        action: str,
+        message_thread_id: int | None = None,
+    ) -> bool:
+        payload: dict[str, Any] = {"chat_id": chat_id, "action": action}
+        if message_thread_id is not None:
+            payload["message_thread_id"] = message_thread_id
+        return bool(await self._call("sendChatAction", payload))
+
     async def edit_message_text(
         self,
         *,

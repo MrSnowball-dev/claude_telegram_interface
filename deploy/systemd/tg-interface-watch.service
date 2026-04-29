@@ -1,0 +1,9 @@
+[Unit]
+Description=Restart tg-interface on source change (debounced)
+
+[Service]
+Type=oneshot
+# Debounce: a burst of file changes during this sleep collapses to one restart,
+# because the .path unit ignores triggers while this oneshot is still running.
+ExecStart=/bin/sleep 3
+ExecStartPost=/bin/systemctl restart tg-interface.service

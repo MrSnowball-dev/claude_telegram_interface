@@ -11,6 +11,7 @@ from pathlib import Path
 from telethon import TelegramClient
 
 from .bot_api import BotAPI
+from .commands import register_commands
 from .config import Settings
 from .handlers import Handlers
 from .i18n import load_locales
@@ -44,6 +45,7 @@ async def amain() -> None:
     log.info("connected as bot, allow-list size=%d", len(settings.allowed_user_ids))
 
     async with BotAPI(settings.bot_token) as bot_api:
+        await register_commands(bot_api)
         handlers = Handlers(
             client=client, settings=settings, state=state,
             registry=registry, bot_api=bot_api,

@@ -165,6 +165,18 @@ class State:
         )
         await self.conn.commit()
 
+    async def set_session_cwd(self, session_id: str, cwd: str) -> None:
+        await self.conn.execute(
+            "UPDATE sessions SET cwd=? WHERE session_id=?", (cwd, session_id),
+        )
+        await self.conn.commit()
+
+    async def set_session_perm(self, session_id: str, perm_mode: str) -> None:
+        await self.conn.execute(
+            "UPDATE sessions SET perm_mode=? WHERE session_id=?", (perm_mode, session_id),
+        )
+        await self.conn.commit()
+
     async def set_session_status(self, session_id: str, status: str) -> None:
         await self.conn.execute(
             "UPDATE sessions SET status=? WHERE session_id=?", (status, session_id),

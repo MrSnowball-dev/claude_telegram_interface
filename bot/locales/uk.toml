@@ -6,7 +6,8 @@ welcome = "Привіт. Я міст між Telegram і Claude Code на цій 
 not_allowed = "Вас немає у списку дозволених користувачів."
 help = "Команди:\n/new — нова сесія Claude (відкриває тему)\n/cd <шлях> — задати робочу теку для нових сесій\n/login — авторизувати Claude на цьому хості\n/logout — вийти з Claude на цьому хості\n/perm <bypass|default|plan|acceptedits> — режим дозволів для нових сесій\n/lang <en|ru|uk> — змінити мову\n/help — це повідомлення"
 
-cd_ok = "Робоча тека: {path}"
+cd_ok = "Робоча тека за замовчуванням для нових сесій: {path}"
+cd_session = "Робоча тека сесії: {path}. Наступне повідомлення перезапустить Claude у ній."
 cd_bad = "Шлях недоступний: {path}"
 cd_missing = "Використання: /cd <абсолютний-шлях>"
 
@@ -31,6 +32,7 @@ logout_failed = "Не вдалося вийти: {detail}"
 system_topic_name = "claude · система"
 
 perm_set = "Режим дозволів для нових сесій: {mode}"
+perm_session_set = "Режим дозволів сесії: {mode}. Наступне повідомлення перезапустить Claude з новим режимом."
 perm_bad = "Невідомий режим. Доступні: bypass, default, plan, acceptedits"
 perm_pick = "Оберіть режим дозволів для нових сесій:"
 perm_label_acceptedits = "Приймати правки"

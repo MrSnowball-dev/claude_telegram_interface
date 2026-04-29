@@ -109,7 +109,10 @@ class Handlers:
             return
 
         if not await self._is_logged_in(user):
-            await self._send(chat_id, t("auth_required", user.lang), thread_id=user.system_thread_id)
+            await self._send(
+                chat_id, t("auth_required", user.lang),
+                thread_id=_reply_thread(event, user),
+            )
             return
 
         await self._route_to_session(event, user, text)
@@ -151,12 +154,24 @@ class Handlers:
             elif data.startswith("perm:"):
                 mode = data[5:]
                 if any(mode == m for m, _ in self._PERM_MENU):
-                    await self.state.set_user_perm(user_id, mode)
+                    # Detect whether the menu lives in a session topic; if so,
+                    # apply to that session only. Else apply to user default.
+                    msg = None
+                    with contextlib.suppress(Exception):
+                        msg = await event.get_message()
+                    msg_thread = _thread_id_of_msg(msg)
+                    session_row = await self._session_for_thread(msg_thread, user)
+                    if session_row is not None:
+                        await self.state.set_session_perm(session_row.session_id, mode)
+                        await self.registry.drop(session_row.session_id)
+                        confirmation = t("perm_session_set", user.lang, mode=mode)
+                    else:
+                        await self.state.set_user_perm(user_id, mode)
+                        confirmation = t("perm_set", user.lang, mode=mode)
                     with contextlib.suppress(BotAPIError):
                         await self.bot_api.edit_message_text(
                             chat_id=chat_id, message_id=message_id,
-                            text=t("perm_set", user.lang, mode=mode),
-                            reply_markup=empty_markup,
+                            text=confirmation, reply_markup=empty_markup,
                         )
         finally:
             with contextlib.suppress(Exception):
@@ -170,17 +185,18 @@ class Handlers:
         rest = rest.strip()
 
         # Open commands — no auth required.
+        reply_thread = _reply_thread(event, user)
         if cmd in ("/start", "/help"):
             await self._send(
                 int(event.chat_id),
                 t("welcome" if cmd == "/start" else "help", user.lang),
-                thread_id=user.system_thread_id,
+                thread_id=reply_thread,
             )
             if cmd == "/start" and not await self._is_logged_in(user):
                 await self._send(
                     int(event.chat_id),
                     t("auth_required", user.lang),
-                    thread_id=user.system_thread_id,
+                    thread_id=reply_thread,
                 )
             return
         if cmd == "/lang":
@@ -200,7 +216,7 @@ class Handlers:
         if not await self._is_logged_in(user):
             await self._send(
                 int(event.chat_id), t("auth_required", user.lang),
-                thread_id=user.system_thread_id,
+                thread_id=reply_thread,
             )
             return
 
@@ -212,28 +228,49 @@ class Handlers:
             await self._cmd_perm(event, user, rest)
         else:
             await self._send(
-                int(event.chat_id), t("help", user.lang), thread_id=user.system_thread_id,
+                int(event.chat_id), t("help", user.lang), thread_id=reply_thread,
             )
 
+    async def _session_for_thread(self, msg_thread: int | None, user: User):
+        """Return the Session row bound to the topic this command came from, or
+        None if the command isn't inside a session topic."""
+        if msg_thread is None or msg_thread == user.system_thread_id:
+            return None
+        return await self.state.get_session_by_thread(msg_thread)
+
     async def _cmd_cd(self, event, user: User, rest: str) -> None:
+        reply_thread = _reply_thread(event, user)
+        session_row = await self._session_for_thread(_extract_thread_id(event), user)
+
         if not rest:
             await self._send(
-                int(event.chat_id), t("cd_missing", user.lang), thread_id=user.system_thread_id,
+                int(event.chat_id), t("cd_missing", user.lang), thread_id=reply_thread,
             )
             return
         path = os.path.realpath(rest)
         if not os.path.isdir(path) or not os.access(path, os.R_OK):
             await self._send(
                 int(event.chat_id),
-                t("cd_bad", user.lang, path=path),
-                thread_id=user.system_thread_id,
+                t("cd_bad", user.lang, path=path), thread_id=reply_thread,
             )
             return
+
+        if session_row is not None:
+            # Topic-scoped: change THIS session's cwd. Drop the live subprocess
+            # so the next user message respawns it with the new --add-dir.
+            await self.state.set_session_cwd(session_row.session_id, path)
+            await self.registry.drop(session_row.session_id)
+            await self._send(
+                int(event.chat_id),
+                t("cd_session", user.lang, path=path), thread_id=reply_thread,
+            )
+            return
+
+        # Outside any session topic: update the user default for new sessions.
         await self.state.set_user_cwd(user.user_id, path)
         await self._send(
             int(event.chat_id),
-            t("cd_ok", user.lang, path=path),
-            thread_id=user.system_thread_id,
+            t("cd_ok", user.lang, path=path), thread_id=reply_thread,
         )
 
     _PERM_MENU: tuple[tuple[str, str], ...] = (
@@ -244,20 +281,32 @@ class Handlers:
     )
 
     async def _cmd_perm(self, event, user: User, rest: str) -> None:
+        reply_thread = _reply_thread(event, user)
+        session_row = await self._session_for_thread(_extract_thread_id(event), user)
+
         if rest:
             mode = normalize_perm_mode(rest)
             if mode is None:
                 await self._send(
                     int(event.chat_id), t("perm_bad", user.lang),
-                    thread_id=user.system_thread_id,
+                    thread_id=reply_thread,
                 )
                 return
-            await self.state.set_user_perm(user.user_id, mode)
-            await self._send(
-                int(event.chat_id),
-                t("perm_set", user.lang, mode=mode),
-                thread_id=user.system_thread_id,
-            )
+            if session_row is not None:
+                await self.state.set_session_perm(session_row.session_id, mode)
+                await self.registry.drop(session_row.session_id)
+                await self._send(
+                    int(event.chat_id),
+                    t("perm_session_set", user.lang, mode=mode),
+                    thread_id=reply_thread,
+                )
+            else:
+                await self.state.set_user_perm(user.user_id, mode)
+                await self._send(
+                    int(event.chat_id),
+                    t("perm_set", user.lang, mode=mode),
+                    thread_id=reply_thread,
+                )
             return
 
         keyboard = {"inline_keyboard": [
@@ -266,10 +315,11 @@ class Handlers:
         ]}
         await self._send(
             int(event.chat_id), t("perm_pick", user.lang),
-            thread_id=user.system_thread_id, reply_markup=keyboard,
+            thread_id=reply_thread, reply_markup=keyboard,
         )
 
     async def _cmd_lang(self, event, user: User, rest: str) -> None:
+        reply_thread = _reply_thread(event, user)
         langs = available_languages()
         if rest:
             code = rest.lower().split("-", 1)[0]
@@ -277,14 +327,13 @@ class Handlers:
                 await self._send(
                     int(event.chat_id),
                     t("lang_bad", user.lang, available=", ".join(sorted(langs))),
-                    thread_id=user.system_thread_id,
+                    thread_id=reply_thread,
                 )
                 return
             await self.state.set_user_lang(user.user_id, code)
             await self._send(
                 int(event.chat_id),
-                t("lang_set", code, name=langs[code]),
-                thread_id=user.system_thread_id,
+                t("lang_set", code, name=langs[code]), thread_id=reply_thread,
             )
             return
 
@@ -294,7 +343,7 @@ class Handlers:
         ]}
         await self._send(
             int(event.chat_id), t("lang_pick", user.lang),
-            thread_id=user.system_thread_id, reply_markup=keyboard,
+            thread_id=reply_thread, reply_markup=keyboard,
         )
 
     async def _cmd_new(self, event, user: User) -> None:
@@ -336,9 +385,10 @@ class Handlers:
 
     async def _cmd_login(self, event, user: User) -> None:
         chat_id = int(event.chat_id)
+        reply_thread = _reply_thread(event, user)
         if user.user_id in self._pending_logins:
             await self._send(
-                chat_id, t("login_already", user.lang), thread_id=user.system_thread_id,
+                chat_id, t("login_already", user.lang), thread_id=reply_thread,
             )
             return
 
@@ -346,14 +396,13 @@ class Handlers:
             await self._send(
                 chat_id,
                 t("login_already_authed", user.lang, fp=_token_fp(user.oauth_token)),
-                thread_id=user.system_thread_id,
+                thread_id=reply_thread,
             )
             return
 
         # One status message that the whole flow edits in place.
-        sys_thread = user.system_thread_id
         initial = await self._send(
-            chat_id, t("login_start", user.lang), thread_id=sys_thread,
+            chat_id, t("login_start", user.lang), thread_id=reply_thread,
         )
         msg_id = int(initial["message_id"]) if initial else None
 
@@ -365,7 +414,7 @@ class Handlers:
                 await self._edit(chat_id, msg_id, text, reply_markup=reply_markup)
             else:
                 await self._send(
-                    chat_id, text, thread_id=sys_thread, reply_markup=reply_markup,
+                    chat_id, text, thread_id=reply_thread, reply_markup=reply_markup,
                 )
 
         async def send_url(url: str) -> None:
@@ -408,17 +457,17 @@ class Handlers:
 
     async def _cmd_exit(self, event, user: User) -> None:
         chat_id = int(event.chat_id)
+        reply_thread = _reply_thread(event, user)
         thread_id = _extract_thread_id(event)
         if thread_id is None:
             await self._send(
-                chat_id, t("exit_no_topic", user.lang),
-                thread_id=user.system_thread_id,
+                chat_id, t("exit_no_topic", user.lang), thread_id=reply_thread,
             )
             return
         if user.system_thread_id is not None and thread_id == user.system_thread_id:
             await self._send(
                 chat_id, t("exit_cant_delete_system", user.lang),
-                thread_id=user.system_thread_id,
+                thread_id=reply_thread,
             )
             return
 
@@ -436,6 +485,8 @@ class Handlers:
                 chat_id=chat_id, message_thread_id=thread_id,
             )
         except BotAPIError as e:
+            # Topic survives; can't reply IN it (was supposed to be deleted) so
+            # surface the error in the system topic.
             log.warning("deleteForumTopic failed: %s", e)
             await self._send(
                 chat_id, t("exit_failed", user.lang, detail=str(e)),
@@ -444,10 +495,10 @@ class Handlers:
 
     async def _cmd_logout(self, event, user: User) -> None:
         chat_id = int(event.chat_id)
+        reply_thread = _reply_thread(event, user)
         if not await self._is_logged_in(user, force=True):
             await self._send(
-                chat_id, t("logout_already", user.lang),
-                thread_id=user.system_thread_id,
+                chat_id, t("logout_already", user.lang), thread_id=reply_thread,
             )
             return
 
@@ -460,8 +511,7 @@ class Handlers:
             await self.registry.drop(sess.session_id)
         self._auth_cache[user.user_id] = (time.monotonic(), False)
         await self._send(
-            chat_id, t("logout_done", user.lang),
-            thread_id=user.system_thread_id,
+            chat_id, t("logout_done", user.lang), thread_id=reply_thread,
         )
 
     # ---- auth gate --------------------------------------------------------
@@ -505,11 +555,12 @@ class Handlers:
     async def _route_to_session(self, event, user: User, text: str) -> None:
         chat_id = int(event.chat_id)
         thread_id = _extract_thread_id(event)
+        reply_thread = thread_id if thread_id is not None else user.system_thread_id
 
         # Messages in the system topic are not session-bound; nudge the user.
         if thread_id is not None and thread_id == user.system_thread_id:
             await self._send(
-                chat_id, t("session_none", user.lang), thread_id=user.system_thread_id,
+                chat_id, t("session_none", user.lang), thread_id=reply_thread,
             )
             return
 
@@ -521,7 +572,7 @@ class Handlers:
 
         if session_row is None:
             await self._send(
-                chat_id, t("session_none", user.lang), thread_id=user.system_thread_id,
+                chat_id, t("session_none", user.lang), thread_id=reply_thread,
             )
             return
 
@@ -685,12 +736,25 @@ class Handlers:
                 log.warning("edit failed: %s", e)
 
 
-def _extract_thread_id(event) -> int | None:
-    """Pull the forum-topic id from an incoming Telethon NewMessage event, if any."""
-    rt = getattr(event.message, "reply_to", None)
+def _thread_id_of_msg(msg) -> int | None:
+    """Pull the forum-topic id from a Telethon Message object, if any."""
+    if msg is None:
+        return None
+    rt = getattr(msg, "reply_to", None)
     if rt is None:
         return None
     if getattr(rt, "forum_topic", False):
         return int(getattr(rt, "reply_to_top_id", None) or getattr(rt, "reply_to_msg_id", 0)) or None
     top = getattr(rt, "reply_to_top_id", None)
     return int(top) if top else None
+
+
+def _extract_thread_id(event) -> int | None:
+    return _thread_id_of_msg(event.message)
+
+
+def _reply_thread(event, user: User) -> int | None:
+    """Where to put a reply. Default rule: in the topic the command was issued
+    in. If the command came from outside any topic (the chat's General area),
+    fall back to the user's system topic so admin chatter stays organized."""
+    return _extract_thread_id(event) or user.system_thread_id

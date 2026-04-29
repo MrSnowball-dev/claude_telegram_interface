@@ -6,7 +6,8 @@ welcome = "Hi. I bridge Telegram to Claude Code on this machine.\n\nUse /login t
 not_allowed = "You are not on the allow-list."
 help = "Commands:\n/new — start a new Claude session (opens a topic)\n/cd <path> — set working directory for new sessions\n/login — authenticate Claude on this host\n/logout — sign out of Claude on this host\n/perm <bypass|default|plan|acceptedits> — permission mode for new sessions\n/lang <en|ru|uk> — override language\n/help — this message"
 
-cd_ok = "Working directory set to {path}"
+cd_ok = "Default working directory for new sessions: {path}"
+cd_session = "Session working directory set to {path}. Next message will respawn Claude there."
 cd_bad = "Path not accessible: {path}"
 cd_missing = "Usage: /cd <absolute-path>"
 
@@ -31,6 +32,7 @@ logout_failed = "Logout failed: {detail}"
 system_topic_name = "claude · system"
 
 perm_set = "Permission mode for new sessions: {mode}"
+perm_session_set = "Session permission mode set to {mode}. Next message will respawn Claude with the new mode."
 perm_bad = "Unknown mode. Use one of: bypass, default, plan, acceptedits"
 perm_pick = "Pick a permission mode for new sessions:"
 perm_label_acceptedits = "Accept Edits"

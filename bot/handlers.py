@@ -24,6 +24,7 @@ from .claude_session import (
 from .config import Settings
 from .i18n import available_languages, pick_lang, t
 from .login_pty import LoginError, auth_status, run_login
+from .paths import user_home as user_home_path
 from .permissions import normalize_perm_mode
 from .registry import SessionRegistry
 from .render import chunk_message, tool_summary
@@ -57,7 +58,7 @@ class Handlers:
         self.registry = registry
         self.bot_api = bot_api
         self._pending_logins: dict[int, _PendingLogin] = {}
-        self._auth_cache: tuple[float, bool] | None = None  # (timestamp, logged_in)
+        self._auth_cache: dict[int, tuple[float, bool]] = {}  # user_id → (timestamp, logged_in)
 
     # ---- registration -----------------------------------------------------
 
@@ -93,7 +94,7 @@ class Handlers:
             await pending.queue.put(text)
             return
 
-        if not await self._is_logged_in():
+        if not await self._is_logged_in(user):
             await self._send(chat_id, t("auth_required", user.lang), thread_id=user.system_thread_id)
             return
 
@@ -113,7 +114,7 @@ class Handlers:
                 t("welcome" if cmd == "/start" else "help", user.lang),
                 thread_id=user.system_thread_id,
             )
-            if cmd == "/start" and not await self._is_logged_in():
+            if cmd == "/start" and not await self._is_logged_in(user):
                 await self._send(
                     int(event.chat_id),
                     t("auth_required", user.lang),
@@ -131,7 +132,7 @@ class Handlers:
             return
 
         # Gated commands.
-        if not await self._is_logged_in():
+        if not await self._is_logged_in(user):
             await self._send(
                 int(event.chat_id), t("auth_required", user.lang),
                 thread_id=user.system_thread_id,
@@ -203,7 +204,7 @@ class Handlers:
         )
 
     async def _cmd_new(self, event, user: User) -> None:
-        # Refresh user (cwd may have changed since dispatch).
+        # Refresh user (cwd / token may have changed since dispatch).
         user = await self.state.get_or_create_user(user.user_id, user.lang, self.settings.default_cwd)
         chat_id = int(event.chat_id)
         try:
@@ -232,6 +233,8 @@ class Handlers:
             perm_mode=sess.perm_mode,
             allowed_tools=self.settings.allowed_tools,
             claude_bin=self.settings.claude_bin,
+            home=user_home_path(self.settings.data_dir, user.user_id),
+            oauth_token=user.oauth_token,
         ))
         await self._send(
             chat_id, t("session_new", user.lang, cwd=sess.cwd), thread_id=thread_id,
@@ -245,8 +248,12 @@ class Handlers:
             )
             return
 
-        if await self._is_logged_in(force=True):
-            status = await auth_status(self.settings.claude_bin)
+        if await self._is_logged_in(user, force=True):
+            status = await auth_status(
+                self.settings.claude_bin,
+                home=user_home_path(self.settings.data_dir, user.user_id),
+                token=user.oauth_token,
+            )
             email = str(status.get("email", ""))
             await self._send(
                 chat_id,
@@ -260,6 +267,7 @@ class Handlers:
         )
         queue: asyncio.Queue[str] = asyncio.Queue()
         sys_thread = user.system_thread_id
+        home = user_home_path(self.settings.data_dir, user.user_id)
 
         async def send_url(url: str) -> None:
             await self._send(
@@ -276,13 +284,18 @@ class Handlers:
 
         async def runner() -> None:
             try:
-                await run_login(
+                token = await run_login(
                     claude_bin=self.settings.claude_bin,
+                    home=home,
                     send_url=send_url,
                     await_code=await_code,
                     on_code_received=on_code_received,
                 )
-                self._auth_cache = (time.monotonic(), True)
+                await self.state.set_user_token(user.user_id, token)
+                self._auth_cache[user.user_id] = (time.monotonic(), True)
+                # Update any registry entries for this user with the new token.
+                for sess in list(self.registry.iter_user(user.user_id)):
+                    sess.oauth_token = token
                 await self._send(chat_id, t("login_done", user.lang), thread_id=sys_thread)
             except LoginError as e:
                 log.warning("login failed: %s", e)
@@ -304,44 +317,42 @@ class Handlers:
 
     async def _cmd_logout(self, event, user: User) -> None:
         chat_id = int(event.chat_id)
-        if not await self._is_logged_in(force=True):
+        if not await self._is_logged_in(user, force=True):
             await self._send(
                 chat_id, t("logout_already", user.lang),
                 thread_id=user.system_thread_id,
             )
             return
 
-        proc = await asyncio.create_subprocess_exec(
-            self.settings.claude_bin, "auth", "logout",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode == 0:
-            self._auth_cache = (time.monotonic(), False)
-            await self._send(
-                chat_id, t("logout_done", user.lang),
-                thread_id=user.system_thread_id,
-            )
-            return
-
-        detail = (stderr or stdout).decode(errors="replace").strip() or f"rc={proc.returncode}"
+        # Forget the per-user token; subsequent claude spawns won't authenticate.
+        # Also kill any live sessions for this user so they don't keep using the
+        # old token from memory.
+        await self.state.set_user_token(user.user_id, None)
+        for sess in list(self.registry.iter_user(user.user_id)):
+            sess.oauth_token = None
+            await self.registry.drop(sess.session_id)
+        self._auth_cache[user.user_id] = (time.monotonic(), False)
         await self._send(
-            chat_id, t("logout_failed", user.lang, detail=detail),
+            chat_id, t("logout_done", user.lang),
             thread_id=user.system_thread_id,
         )
 
     # ---- auth gate --------------------------------------------------------
 
-    async def _is_logged_in(self, *, force: bool = False) -> bool:
+    async def _is_logged_in(self, user: User, *, force: bool = False) -> bool:
         now = time.monotonic()
-        if not force and self._auth_cache is not None:
-            ts, ok = self._auth_cache
+        cached = self._auth_cache.get(user.user_id)
+        if not force and cached is not None:
+            ts, ok = cached
             if now - ts < _AUTH_CACHE_TTL:
                 return ok
-        status = await auth_status(self.settings.claude_bin)
+        status = await auth_status(
+            self.settings.claude_bin,
+            home=user_home_path(self.settings.data_dir, user.user_id),
+            token=user.oauth_token,
+        )
         ok = bool(status.get("loggedIn"))
-        self._auth_cache = (now, ok)
+        self._auth_cache[user.user_id] = (now, ok)
         return ok
 
     # ---- system thread ----------------------------------------------------
@@ -396,9 +407,14 @@ class Handlers:
                 perm_mode=session_row.perm_mode,
                 allowed_tools=self.settings.allowed_tools,
                 claude_bin=self.settings.claude_bin,
+                home=user_home_path(self.settings.data_dir, user.user_id),
+                oauth_token=user.oauth_token,
             )
             sess._known = True  # noqa: SLF001  -- existing session_id; resume on first spawn
             await self.registry.put(sess)
+        else:
+            # Token may have rotated since spawn (re-login); refresh in-memory.
+            sess.oauth_token = user.oauth_token
 
         await self.state.touch(session_row.session_id)
         target_thread = session_row.thread_id

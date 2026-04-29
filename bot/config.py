@@ -48,6 +48,7 @@ class Settings:
     idle_suspend_sec: int
     allowed_tools: tuple[str, ...]
     db_path: str
+    data_dir: str
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -61,4 +62,5 @@ class Settings:
             idle_suspend_sec=int(os.environ.get("IDLE_SUSPEND_SEC", "600")),
             allowed_tools=tuple(os.environ.get("ALLOWED_TOOLS", "Bash Read Write Edit Glob Grep").split()),
             db_path=os.environ.get("DB_PATH", "state.db"),
+            data_dir=os.environ.get("DATA_DIR", "/var/lib/claude-bridge"),
         )

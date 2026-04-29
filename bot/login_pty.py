@@ -33,6 +33,9 @@ _OTHER_CSI_RE = re.compile(rb"\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|\x1b[\x4
 _URL_START_RE = re.compile(rb"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+")
 _URL_CONT_RE = re.compile(rb"[\r\n]+([A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+)")
 _PROMPT_RE = re.compile(rb"Paste code here", re.IGNORECASE)
+_TOKEN_ANCHOR_RE = re.compile(rb"Store this token", re.IGNORECASE)
+# Token is base64url-ish; runs of >= 16 chars, possibly wrapped across lines.
+_TOKEN_CHUNK_RE = re.compile(rb"[A-Za-z0-9_\-]{16,}")
 
 
 def _extract_url(buf: bytes) -> str | None:
@@ -52,6 +55,24 @@ def _extract_url(buf: bytes) -> str | None:
         pos = cm.end()
     return b"".join(pieces).decode(errors="replace").rstrip(".,)\"' ")
 
+
+def _extract_token(cleaned: bytes) -> str | None:
+    """``setup-token`` prints the OAuth token (possibly wrapped across two lines)
+    immediately before the line ``Store this token securely…``. We anchor on that
+    string and concatenate the token-shaped chunks that sit just before it."""
+    anchor = _TOKEN_ANCHOR_RE.search(cleaned)
+    if anchor is None:
+        return None
+    region = cleaned[: anchor.start()]
+    chunks = _TOKEN_CHUNK_RE.findall(region[-400:])
+    if not chunks:
+        return None
+    # Common case: 1-2 trailing chunks that together form the token. Take a
+    # generous suffix and prune anything obviously-not-token (short prose words
+    # are filtered out by the {16,} length minimum already).
+    token = b"".join(chunks[-2:]).decode()
+    return token if len(token) >= 32 else None
+
 URL_TIMEOUT = 10.0
 PROMPT_TIMEOUT = 10.0
 CODE_TIMEOUT = 600.0  # User-reply window stays generous.
@@ -64,11 +85,19 @@ class LoginError(RuntimeError):
     pass
 
 
-async def auth_status(claude_bin: str) -> dict[str, object]:
+async def auth_status(
+    claude_bin: str, *, home: str | None = None, token: str | None = None,
+) -> dict[str, object]:
+    env = {"PATH": os.environ.get("PATH", "")}
+    if home is not None:
+        env["HOME"] = home
+    if token is not None:
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = token
     proc = await asyncio.create_subprocess_exec(
         claude_bin, "auth", "status",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=env,
     )
     out, _ = await proc.communicate()
     try:
@@ -151,17 +180,16 @@ class PtyReader:
 async def run_login(
     *,
     claude_bin: str,
+    home: str,
     send_url: Callable[[str], Awaitable[None]],
     await_code: Callable[[float], Awaitable[str]],
     on_code_received: Callable[[], Awaitable[None]] | None = None,
-) -> None:
+) -> str:
     """Run a single ``setup-token`` pass. Sends the OAuth URL via ``send_url``,
     awaits the user-pasted code via ``await_code``, writes it into the PTY,
-    then polls ``claude auth status`` for confirmation."""
-
-    pre = await auth_status(claude_bin)
-    if pre.get("loggedIn"):
-        return
+    then captures the printed OAuth token and returns it. The caller is
+    responsible for storing the token and passing it to subsequent ``claude``
+    spawns via ``CLAUDE_CODE_OAUTH_TOKEN``."""
 
     master, slave = pty.openpty()
     try:
@@ -171,7 +199,7 @@ async def run_login(
             start_new_session=True,
             env={
                 "PATH": os.environ.get("PATH", ""),
-                "HOME": os.environ.get("HOME", "/root"),
+                "HOME": home,
                 "TERM": "xterm-256color",
             },
         )
@@ -223,18 +251,22 @@ async def run_login(
         deadline = asyncio.get_running_loop().time() + CONFIRM_TIMEOUT
         while True:
             await asyncio.sleep(POLL_INTERVAL)
-            status = await auth_status(claude_bin)
-            if status.get("loggedIn"):
-                return
             cleaned = reader.cleaned()
+            token = _extract_token(cleaned)
+            if token is not None:
+                return token
             if _OAUTH_ERROR_RE.search(cleaned):
-                # Fail fast: the CLI rejected the code; no point polling status.
                 tail = cleaned[-300:].decode(errors="replace").strip()
                 raise LoginError(f"code rejected: {tail}")
-            if proc.returncode is not None:
+            if proc.returncode is not None and token is None:
+                # Re-check: sometimes the token lands at the very end and the
+                # process has already exited.
+                token = _extract_token(reader.cleaned())
+                if token is not None:
+                    return token
                 tail = cleaned[-300:].decode(errors="replace").strip()
                 raise LoginError(
-                    f"claude exited without auth (rc={proc.returncode}); tail: {tail!r}",
+                    f"claude exited without token (rc={proc.returncode}); tail: {tail!r}",
                 )
             if asyncio.get_running_loop().time() >= deadline:
                 tail = cleaned[-300:].decode(errors="replace").strip()

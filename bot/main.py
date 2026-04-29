@@ -29,6 +29,9 @@ async def amain() -> None:
     settings = Settings.from_env()
     load_locales(Path(__file__).parent / "locales")
 
+    # Ensure the per-user data root exists; per-user homes are lazily created.
+    Path(settings.data_dir).mkdir(parents=True, exist_ok=True, mode=0o700)
+
     state = await State.open(settings.db_path)
     registry = SessionRegistry(idle_suspend_sec=settings.idle_suspend_sec)
     registry.start()

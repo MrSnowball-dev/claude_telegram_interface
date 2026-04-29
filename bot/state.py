@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS users (
   cwd TEXT NOT NULL,
   perm_mode TEXT NOT NULL DEFAULT 'acceptEdits',
   active_session_id TEXT,
-  system_thread_id INTEGER
+  system_thread_id INTEGER,
+  oauth_token TEXT
 );
 CREATE TABLE IF NOT EXISTS sessions (
   session_id TEXT PRIMARY KEY,
@@ -44,6 +45,7 @@ class User:
     perm_mode: str
     active_session_id: str | None
     system_thread_id: int | None = None
+    oauth_token: str | None = None
 
 
 @dataclass(slots=True)
@@ -73,9 +75,13 @@ class State:
         await conn.execute("PRAGMA journal_mode=WAL")
         await conn.execute("PRAGMA synchronous=NORMAL")
         await conn.executescript(_SCHEMA)
-        # Idempotent migration for DBs created before system_thread_id existed.
-        with contextlib.suppress(aiosqlite.OperationalError):
-            await conn.execute("ALTER TABLE users ADD COLUMN system_thread_id INTEGER")
+        # Idempotent migrations for DBs created before these columns existed.
+        for ddl in (
+            "ALTER TABLE users ADD COLUMN system_thread_id INTEGER",
+            "ALTER TABLE users ADD COLUMN oauth_token TEXT",
+        ):
+            with contextlib.suppress(aiosqlite.OperationalError):
+                await conn.execute(ddl)
         await conn.commit()
         return cls(conn)
 
@@ -117,6 +123,12 @@ class State:
     async def set_system_thread(self, user_id: int, thread_id: int | None) -> None:
         await self.conn.execute(
             "UPDATE users SET system_thread_id=? WHERE user_id=?", (thread_id, user_id),
+        )
+        await self.conn.commit()
+
+    async def set_user_token(self, user_id: int, token: str | None) -> None:
+        await self.conn.execute(
+            "UPDATE users SET oauth_token=? WHERE user_id=?", (token, user_id),
         )
         await self.conn.commit()
 

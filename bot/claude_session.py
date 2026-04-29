@@ -135,6 +135,7 @@ class ClaudeSession:
 
     __slots__ = (
         "session_id", "user_id", "cwd", "perm_mode", "allowed_tools", "claude_bin",
+        "home", "oauth_token",
         "_proc", "_reader_task", "_lock", "_known", "last_used",
     )
 
@@ -147,6 +148,8 @@ class ClaudeSession:
         perm_mode: str,
         allowed_tools: tuple[str, ...],
         claude_bin: str,
+        home: str,
+        oauth_token: str | None,
     ) -> None:
         self.session_id = session_id
         self.user_id = user_id
@@ -154,6 +157,8 @@ class ClaudeSession:
         self.perm_mode = perm_mode
         self.allowed_tools = allowed_tools
         self.claude_bin = claude_bin
+        self.home = home
+        self.oauth_token = oauth_token
         self._proc: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
@@ -181,6 +186,13 @@ class ClaudeSession:
         else:
             args += ["--session-id", self.session_id]
 
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": self.home,
+            "TERM": "xterm-256color",
+        }
+        if self.oauth_token:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = self.oauth_token
         self._proc = await asyncio.create_subprocess_exec(
             *args,
             cwd=self.cwd,
@@ -189,8 +201,12 @@ class ClaudeSession:
             stderr=asyncio.subprocess.PIPE,
             limit=_BUFFER_LIMIT,
             start_new_session=True,
+            env=env,
         )
-        log.info("spawned claude pid=%s session=%s cwd=%s", self._proc.pid, self.session_id, self.cwd)
+        log.info(
+            "spawned claude pid=%s session=%s cwd=%s home=%s",
+            self._proc.pid, self.session_id, self.cwd, self.home,
+        )
 
     async def ensure_running(self) -> None:
         if self.alive:

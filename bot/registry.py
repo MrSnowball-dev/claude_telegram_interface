@@ -22,6 +22,9 @@ class SessionRegistry:
     def get(self, session_id: str) -> ClaudeSession | None:
         return self._by_id.get(session_id)
 
+    def iter_user(self, user_id: int):
+        return (s for s in self._by_id.values() if s.user_id == user_id)
+
     async def put(self, session: ClaudeSession) -> None:
         async with self._lock:
             self._by_id[session.session_id] = session

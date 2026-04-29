@@ -36,6 +36,14 @@ from .streaming import DraftStreamer
 log = logging.getLogger(__name__)
 
 _AUTH_CACHE_TTL = 30.0  # seconds
+_TOPIC_NAME_MAX = 128
+
+
+def _topic_name(cwd: str) -> str:
+    name = cwd or "/"
+    if len(name) > _TOPIC_NAME_MAX:
+        name = "…" + name[-(_TOPIC_NAME_MAX - 1):]
+    return name
 
 
 def _token_fp(token: str | None) -> str:
@@ -185,7 +193,10 @@ class Handlers:
                     session_row = await self._session_for_thread(msg_thread, user)
                     if session_row is not None:
                         await self.state.set_session_perm(session_row.session_id, mode)
-                        await self.registry.drop(session_row.session_id)
+                        sess = self.registry.get(session_row.session_id)
+                        if sess is not None:
+                            sess.perm_mode = mode
+                            await sess.suspend()
                         confirmation = t("perm_session_set", user.lang, mode=mode)
                     else:
                         await self.state.set_user_perm(user_id, mode)
@@ -289,6 +300,13 @@ class Handlers:
             if sess is not None:
                 sess.cwd = path
                 await sess.suspend()
+            if session_row.thread_id is not None:
+                with contextlib.suppress(BotAPIError):
+                    await self.bot_api.edit_forum_topic(
+                        chat_id=int(event.chat_id),
+                        message_thread_id=session_row.thread_id,
+                        name=_topic_name(path),
+                    )
             await self._send(
                 int(event.chat_id),
                 t("cd_session", user.lang, path=path), thread_id=reply_thread,
@@ -385,7 +403,7 @@ class Handlers:
         try:
             topic = await self.bot_api.create_forum_topic(
                 chat_id=chat_id,
-                name=f"claude · {user.cwd.split('/')[-1] or 'session'}",
+                name=_topic_name(user.cwd),
             )
             thread_id: int | None = int(topic["message_thread_id"])
         except BotAPIError as e:

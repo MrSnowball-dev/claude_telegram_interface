@@ -29,7 +29,7 @@ logout_done = "Logged out."
 logout_already = "Not logged in."
 logout_failed = "Logout failed: {detail}"
 
-system_topic_name = "claude · system"
+system_topic_name = "System"
 
 perm_set = "Permission mode for new sessions: {mode}"
 perm_session_set = "Session permission mode set to {mode}. Next message will respawn Claude with the new mode."

@@ -93,6 +93,14 @@ class BotAPI:
             {"chat_id": chat_id, "message_thread_id": message_thread_id},
         ))
 
+    async def edit_forum_topic(
+        self, *, chat_id: int, message_thread_id: int, name: str,
+    ) -> bool:
+        return bool(await self._call(
+            "editForumTopic",
+            {"chat_id": chat_id, "message_thread_id": message_thread_id, "name": name},
+        ))
+
     async def send_message(
         self,
         *,

@@ -29,7 +29,7 @@ logout_done = "Вихід виконано."
 logout_already = "Ви не авторизовані."
 logout_failed = "Не вдалося вийти: {detail}"
 
-system_topic_name = "claude · система"
+system_topic_name = "Головний"
 
 perm_set = "Режим дозволів для нових сесій: {mode}"
 perm_session_set = "Режим дозволів сесії: {mode}. Наступне повідомлення перезапустить Claude з новим режимом."

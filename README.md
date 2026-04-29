@@ -42,18 +42,27 @@ cp .env.example .env
 
 ## Run as a systemd service
 
-Three units in `deploy/systemd/`:
-
-- `tg-interface.service` — the bot itself (`Restart=always`, env from `/opt/tg_interface/.env`).
-- `tg-interface-watch.path` — watches `bot/` and `bot/locales/` for changes.
-- `tg-interface-watch.service` — oneshot, sleeps 3 s for debounce, then restarts the bot. A burst of file changes during the sleep collapses to one restart, so editing rapidly doesn't thrash the process.
-
-Install and enable:
+The default install registers `tg-interface.service` only (`Restart=always`,
+env from `/opt/tg_interface/.env`):
 
 ```sh
 sudo deploy/install.sh
 journalctl -u tg-interface -f
 ```
+
+`deploy/systemd/` also contains `tg-interface-watch.path` +
+`tg-interface-watch.service` for auto-restart on source change (debounced 3 s).
+**Not enabled by default** — restart-on-edit interacts badly with mid-stream
+output and triggers rate limits on per-restart API calls. Opt in manually if
+you want it:
+
+```sh
+sudo cp deploy/systemd/tg-interface-watch.* /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now tg-interface-watch.path
+```
+
+Otherwise restart the bot explicitly with `sudo systemctl restart tg-interface`.
 
 ### Environment variables
 

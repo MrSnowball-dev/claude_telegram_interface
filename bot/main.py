@@ -10,14 +10,13 @@ from pathlib import Path
 
 from telethon import TelegramClient
 
-from .bot_api import BotAPI, BotAPIError
+from .bot_api import BotAPI
 from .commands import register_commands
 from .config import Settings
 from .handlers import Handlers
-from .i18n import load_locales, t
-from .markdown import md_to_html
+from .i18n import load_locales
 from .registry import SessionRegistry
-from .state import State, User
+from .state import State
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +51,7 @@ async def amain() -> None:
             registry=registry, bot_api=bot_api,
         )
         handlers.register()
-        await _notify_alive_sessions(state, bot_api)
+        await handlers.on_startup()
 
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
@@ -72,40 +71,6 @@ async def amain() -> None:
         await registry.stop()
         await client.disconnect()
         await state.close()
-
-
-async def _notify_alive_sessions(state: State, bot_api: BotAPI) -> None:
-    """Post a brief 'I'm back' message into every non-dead session topic so the
-    user knows the bot finished restarting and they can keep talking."""
-    sessions = await state.get_alive_sessions()
-    if not sessions:
-        return
-    user_lang: dict[int, str] = {}
-
-    async def lang_for(uid: int) -> str:
-        cached = user_lang.get(uid)
-        if cached is not None:
-            return cached
-        u: User | None = await state.get_user(uid)
-        code = u.lang if u else "en"
-        user_lang[uid] = code
-        return code
-
-    for sess in sessions:
-        if sess.thread_id is None:
-            continue
-        code = await lang_for(sess.user_id)
-        try:
-            await bot_api.send_message(
-                chat_id=sess.user_id,
-                text=md_to_html(t("service_restarted", code)),
-                message_thread_id=sess.thread_id,
-                parse_mode="HTML",
-            )
-        except BotAPIError as e:
-            log.info("restart notify skipped (%s/%s): %s",
-                     sess.user_id, sess.thread_id, e)
-    log.info("notified %d alive session topic(s)", len(sessions))
 
 
 def run() -> None:

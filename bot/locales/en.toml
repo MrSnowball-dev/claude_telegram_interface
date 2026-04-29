@@ -68,3 +68,4 @@ thinking = "[thinking…]"
 streaming_truncated = "(streaming truncated; final message below)"
 
 service_restarted = "Service restarted. Send a message to continue."
+recovering_turn = "Service restarted mid-stream — picking up where we left off."

@@ -77,6 +77,88 @@ class Handlers:
         self.client.add_event_handler(self._on_message, events.NewMessage(incoming=True))
         self.client.add_event_handler(self._on_callback, events.CallbackQuery)
 
+    async def on_startup(self) -> None:
+        """After (re)connecting to Telegram: notify each non-dead session topic
+        that the bot is back, and re-issue any turn that was streaming when
+        the previous process exited (its row carries a non-NULL pending_text).
+        """
+        sessions = await self.state.get_alive_sessions()
+        for sess_row in sessions:
+            if sess_row.thread_id is None:
+                # Orphan: no topic to surface anything in. If it had a pending
+                # turn, drop it — we have nowhere to stream the recovery.
+                if sess_row.pending_text is not None:
+                    await self.state.clear_pending_turn(sess_row.session_id)
+                continue
+            user = await self.state.get_user(sess_row.user_id)
+            if user is None:
+                continue
+            if sess_row.pending_text:
+                # Fire-and-forget recovery so other sessions don't block on this
+                # one's network latency.
+                asyncio.create_task(self._recover_turn(sess_row, user))
+            else:
+                await self._send_restart_notice(sess_row, user)
+
+    async def _send_restart_notice(self, sess_row, user: User) -> None:
+        try:
+            await self.bot_api.send_message(
+                chat_id=sess_row.user_id,
+                text=md_to_html(t("service_restarted", user.lang)),
+                message_thread_id=sess_row.thread_id,
+                parse_mode="HTML",
+            )
+        except BotAPIError as e:
+            log.info("restart notify skipped (%s/%s): %s",
+                     sess_row.user_id, sess_row.thread_id, e)
+
+    async def _recover_turn(self, sess_row, user: User) -> None:
+        """Re-issue an interrupted turn. The user_text is in sess_row.pending_text;
+        the session_id resumes via --resume so Claude has full conversation context."""
+        try:
+            try:
+                await self.bot_api.send_message(
+                    chat_id=sess_row.user_id,
+                    text=md_to_html(t("recovering_turn", user.lang)),
+                    message_thread_id=sess_row.thread_id,
+                    parse_mode="HTML",
+                )
+            except BotAPIError as e:
+                log.info("recovery banner skipped: %s", e)
+
+            sess = self.registry.get(sess_row.session_id)
+            if sess is None:
+                sess = ClaudeSession(
+                    session_id=sess_row.session_id,
+                    user_id=sess_row.user_id,
+                    cwd=sess_row.cwd,
+                    perm_mode=sess_row.perm_mode,
+                    allowed_tools=self.settings.allowed_tools,
+                    claude_bin=self.settings.claude_bin,
+                    home=user_home_path(self.settings.data_dir, sess_row.user_id),
+                    oauth_token=user.oauth_token,
+                )
+                sess._known = True  # noqa: SLF001
+                await self.registry.put(sess)
+
+            target_thread = sess_row.thread_id
+            draft_id = (
+                await self.state.next_draft_id(target_thread)
+                if target_thread is not None else 1
+            )
+            await self._run_streamed_turn(
+                session=sess,
+                user_text=sess_row.pending_text,
+                chat_id=sess_row.user_id,
+                thread_id=target_thread,
+                draft_id=draft_id,
+                lang=user.lang,
+            )
+        except Exception:
+            log.exception("recovery turn crashed for session %s", sess_row.session_id)
+        finally:
+            await self.state.clear_pending_turn(sess_row.session_id)
+
     # ---- main dispatch ----------------------------------------------------
 
     async def _on_message(self, event: events.NewMessage.Event) -> None:
@@ -257,10 +339,17 @@ class Handlers:
             return
 
         if session_row is not None:
-            # Topic-scoped: change THIS session's cwd. Drop the live subprocess
-            # so the next user message respawns it with the new --add-dir.
+            # Topic-scoped: update this session's cwd and suspend the subprocess
+            # so the next message respawns it with the new cwd/--add-dir.
+            # We keep the session in the registry (instead of drop()) so that
+            # its _known flag is preserved — drop() would cause the replacement
+            # object to blindly set _known=True, making --resume fail for
+            # sessions that were never actually started.
             await self.state.set_session_cwd(session_row.session_id, path)
-            await self.registry.drop(session_row.session_id)
+            sess = self.registry.get(session_row.session_id)
+            if sess is not None:
+                sess.cwd = path
+                await sess.suspend()
             await self._send(
                 int(event.chat_id),
                 t("cd_session", user.lang, path=path), thread_id=reply_thread,
@@ -601,14 +690,19 @@ class Handlers:
             await self.state.next_draft_id(target_thread) if target_thread is not None else 1
         )
 
-        await self._run_streamed_turn(
-            session=sess,
-            user_text=text,
-            chat_id=chat_id,
-            thread_id=target_thread,
-            draft_id=draft_id,
-            lang=user.lang,
-        )
+        # Persist the in-flight turn so a restart mid-stream can recover it.
+        await self.state.set_pending_turn(session_row.session_id, text)
+        try:
+            await self._run_streamed_turn(
+                session=sess,
+                user_text=text,
+                chat_id=chat_id,
+                thread_id=target_thread,
+                draft_id=draft_id,
+                lang=user.lang,
+            )
+        finally:
+            await self.state.clear_pending_turn(session_row.session_id)
 
     async def _run_streamed_turn(
         self,

@@ -26,7 +26,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   perm_mode TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   last_used INTEGER NOT NULL,
-  status TEXT NOT NULL
+  status TEXT NOT NULL,
+  pending_text TEXT,
+  pending_started_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS drafts (
   thread_id INTEGER PRIMARY KEY,
@@ -58,6 +60,8 @@ class Session:
     created_at: int
     last_used: int
     status: str  # 'active' | 'suspended' | 'dead'
+    pending_text: str | None = None
+    pending_started_at: int | None = None
 
 
 def _now() -> int:
@@ -79,6 +83,8 @@ class State:
         for ddl in (
             "ALTER TABLE users ADD COLUMN system_thread_id INTEGER",
             "ALTER TABLE users ADD COLUMN oauth_token TEXT",
+            "ALTER TABLE sessions ADD COLUMN pending_text TEXT",
+            "ALTER TABLE sessions ADD COLUMN pending_started_at INTEGER",
         ):
             with contextlib.suppress(aiosqlite.OperationalError):
                 await conn.execute(ddl)
@@ -191,6 +197,33 @@ class State:
             "UPDATE sessions SET perm_mode=? WHERE session_id=?", (perm_mode, session_id),
         )
         await self.conn.commit()
+
+    async def set_pending_turn(self, session_id: str, text: str) -> None:
+        """Record that ``text`` is being streamed to the user. Cleared on
+        normal turn end. Rows that survive a service restart are picked up
+        by recover_pending_turns."""
+        await self.conn.execute(
+            "UPDATE sessions SET pending_text=?, pending_started_at=? WHERE session_id=?",
+            (text, _now(), session_id),
+        )
+        await self.conn.commit()
+
+    async def clear_pending_turn(self, session_id: str) -> None:
+        await self.conn.execute(
+            "UPDATE sessions SET pending_text=NULL, pending_started_at=NULL "
+            "WHERE session_id=?", (session_id,),
+        )
+        await self.conn.commit()
+
+    async def get_pending_turns(self) -> list[Session]:
+        """Sessions whose last turn started but never reached its result event —
+        i.e., interrupted by a crash or restart."""
+        cur = await self.conn.execute(
+            "SELECT * FROM sessions WHERE pending_text IS NOT NULL "
+            "AND status != 'dead' ORDER BY pending_started_at"
+        )
+        rows = await cur.fetchall()
+        return [Session(**row) for row in rows]
 
     async def set_session_status(self, session_id: str, status: str) -> None:
         await self.conn.execute(

@@ -25,6 +25,7 @@ from .claude_session import (
 from .config import Settings
 from .i18n import available_languages, pick_lang, t
 from .login_pty import LoginError, auth_status, run_login
+from .markdown import md_to_html
 from .paths import user_home as user_home_path
 from .permissions import normalize_perm_mode
 from .registry import SessionRegistry
@@ -621,39 +622,57 @@ class Handlers:
     ) -> None:
         accumulated: list[str] = []
         result_text: list[str] = [""]
-        first_text_seen = asyncio.Event()
 
         async def send_draft(text: str) -> None:
             if not text:
                 return
-            await self.bot_api.send_message_draft(
-                chat_id=chat_id, draft_id=draft_id, text=text,
-                message_thread_id=thread_id,
-            )
+            try:
+                await self.bot_api.send_message_draft(
+                    chat_id=chat_id, draft_id=draft_id,
+                    text=md_to_html(text),
+                    message_thread_id=thread_id,
+                    parse_mode="HTML",
+                )
+            except BotAPIError as e:
+                # Fall back to plain text if HTML rendering trips Telegram's parser
+                # (rare; usually a streaming chunk that ends mid-formatting).
+                if "parse" in e.description.lower() or "tag" in e.description.lower():
+                    await self.bot_api.send_message_draft(
+                        chat_id=chat_id, draft_id=draft_id, text=text,
+                        message_thread_id=thread_id,
+                    )
+                else:
+                    raise
 
         async def commit(text: str) -> None:
             for chunk in chunk_message(text):
-                await self.bot_api.send_message(
-                    chat_id=chat_id, text=chunk, message_thread_id=thread_id,
-                )
+                try:
+                    await self.bot_api.send_message(
+                        chat_id=chat_id, text=md_to_html(chunk),
+                        message_thread_id=thread_id, parse_mode="HTML",
+                    )
+                except BotAPIError as e:
+                    if "parse" in e.description.lower() or "tag" in e.description.lower():
+                        await self.bot_api.send_message(
+                            chat_id=chat_id, text=chunk, message_thread_id=thread_id,
+                        )
+                    else:
+                        raise
 
         streamer = DraftStreamer(send_draft, commit)
 
         async def typing_pinger() -> None:
-            # Telegram clears the typing indicator after ~5s, so refresh every 4.
-            # Stop as soon as the first text delta lands — the animated draft
-            # itself signals activity from then on.
+            # Run for the entire turn so thinking gaps and tool-execution pauses
+            # all show typing. Telegram clears the indicator ~5 s after each
+            # sendChatAction; refresh every 4 s to keep it visible.
             try:
-                while not first_text_seen.is_set():
+                while True:
                     with contextlib.suppress(BotAPIError):
                         await self.bot_api.send_chat_action(
                             chat_id=chat_id, action="typing",
                             message_thread_id=thread_id,
                         )
-                    try:
-                        await asyncio.wait_for(first_text_seen.wait(), timeout=4.0)
-                    except TimeoutError:
-                        continue
+                    await asyncio.sleep(4.0)
             except asyncio.CancelledError:
                 pass
 
@@ -663,7 +682,6 @@ class Handlers:
             if isinstance(evt, TurnStarted):
                 return
             if isinstance(evt, TextDelta):
-                first_text_seen.set()
                 accumulated.append(evt.text)
                 streamer.append(evt.text)
                 return
@@ -673,12 +691,10 @@ class Handlers:
                 streamer.append(line)
                 return
             if isinstance(evt, Thinking):
-                line = "\n" + t("thinking", lang) + "\n"
-                accumulated.append(line)
-                streamer.append(line)
+                # No inline marker — typing pinger covers the gap. Adding a
+                # "[thinking…]" line here would just clutter the final message.
                 return
             if isinstance(evt, TurnEnded):
-                first_text_seen.set()
                 if evt.is_error:
                     err = t("err_generic", lang, detail=evt.error or "?")
                     await streamer.finalize(err)
@@ -692,7 +708,6 @@ class Handlers:
             log.exception("turn crashed")
             await streamer.finalize(t("err_generic", lang, detail=repr(e)))
         finally:
-            first_text_seen.set()
             ping_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await ping_task

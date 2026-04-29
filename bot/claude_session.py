@@ -75,7 +75,9 @@ def parse_event(raw: dict[str, Any], state: dict[str, Any]) -> SemanticEvent | N
 
     if kind == "result":
         if raw.get("is_error"):
-            err = raw.get("api_error_status") or raw.get("result") or "unknown error"
+            errors = raw.get("errors")
+            first_error = errors[0] if errors else None
+            err = raw.get("api_error_status") or raw.get("result") or first_error or "unknown error"
             return TurnEnded("", True, str(err))
         return TurnEnded(str(raw.get("result", "")), False, None)
 

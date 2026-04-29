@@ -60,3 +60,36 @@ async def test_streamer_skips_after_finalize() -> None:
 
     assert commits == ["hi"]
     assert all("ignored" not in d for d in drafts)
+
+
+@pytest.mark.asyncio
+async def test_streamer_heartbeats_during_silence() -> None:
+    """During a long quiet period, the heartbeat should re-send the draft text
+    (with the same content) so Telegram doesn't retire the animation."""
+    drafts: list[str] = []
+    commits: list[str] = []
+
+    async def send_draft(text: str) -> None:
+        drafts.append(text)
+
+    async def commit(text: str) -> None:
+        commits.append(text)
+
+    streamer = DraftStreamer(
+        send_draft, commit, min_interval=0.01, heartbeat_interval=0.05,
+    )
+    # Stream a small amount of content, then go silent.
+    streamer.append("hello world from claude")
+    await asyncio.sleep(0.02)
+    initial_count = len(drafts)
+    assert initial_count >= 1
+
+    # Wait long enough for several heartbeat ticks but no real updates.
+    await asyncio.sleep(0.25)
+
+    # Heartbeats fired with the same text.
+    after_silence = len(drafts)
+    assert after_silence > initial_count
+    assert all(d == drafts[0] for d in drafts), "heartbeat should re-send same text"
+
+    await streamer.finalize("hello world from claude")

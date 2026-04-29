@@ -10,7 +10,6 @@ from bot.claude_session import (
     parse_event,
 )
 
-
 SESSION_ID = "11111111-2222-3333-4444-555555555555"
 RAW_LINES = [
     {"type": "system", "subtype": "init", "session_id": SESSION_ID, "model": "x"},

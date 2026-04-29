@@ -192,6 +192,9 @@ class Handlers:
         if cmd == "/logout":
             await self._cmd_logout(event, user)
             return
+        if cmd == "/exit":
+            await self._cmd_exit(event, user)
+            return
 
         # Gated commands.
         if not await self._is_logged_in(user):
@@ -402,6 +405,42 @@ class Handlers:
 
         task = asyncio.create_task(runner())
         self._pending_logins[user.user_id] = _PendingLogin(queue=queue, task=task)
+
+    async def _cmd_exit(self, event, user: User) -> None:
+        chat_id = int(event.chat_id)
+        thread_id = _extract_thread_id(event)
+        if thread_id is None:
+            await self._send(
+                chat_id, t("exit_no_topic", user.lang),
+                thread_id=user.system_thread_id,
+            )
+            return
+        if user.system_thread_id is not None and thread_id == user.system_thread_id:
+            await self._send(
+                chat_id, t("exit_cant_delete_system", user.lang),
+                thread_id=user.system_thread_id,
+            )
+            return
+
+        # Kill any live subprocess + mark session dead. Done before the API call
+        # so even if delete races / fails we still tear down our own state.
+        session_row = await self.state.get_session_by_thread(thread_id)
+        if session_row is not None:
+            await self.registry.drop(session_row.session_id)
+            await self.state.set_session_status(session_row.session_id, "dead")
+            if user.active_session_id == session_row.session_id:
+                await self.state.set_active_session(user.user_id, None)
+
+        try:
+            await self.bot_api.delete_forum_topic(
+                chat_id=chat_id, message_thread_id=thread_id,
+            )
+        except BotAPIError as e:
+            log.warning("deleteForumTopic failed: %s", e)
+            await self._send(
+                chat_id, t("exit_failed", user.lang, detail=str(e)),
+                thread_id=user.system_thread_id,
+            )
 
     async def _cmd_logout(self, event, user: User) -> None:
         chat_id = int(event.chat_id)

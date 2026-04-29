@@ -43,12 +43,17 @@ lang_bad = "Невідома мова. Доступні: {available}"
 lang_pick = "Оберіть мову:"
 
 cmd_new_desc = "Почати нову сесію Claude"
+cmd_exit_desc = "Закрити та видалити поточний топік сесії"
 cmd_cd_desc = "Задати робочу теку для нових сесій"
 cmd_login_desc = "Авторизувати Claude на цьому хості"
 cmd_logout_desc = "Вийти з Claude"
 cmd_perm_desc = "Режим дозволів для нових сесій"
 cmd_lang_desc = "Змінити мову інтерфейсу"
 cmd_help_desc = "Показати довідку"
+
+exit_no_topic = "Використайте /exit всередині топіка сесії, щоб видалити його."
+exit_cant_delete_system = "Системний топік видаляти не буду."
+exit_failed = "Не вдалося видалити топік: {detail}"
 
 err_generic = "Щось пішло не так: {detail}"
 turn_crashed = "Сесія Claude впала; перезапускаю і повторюю хід."

@@ -43,12 +43,17 @@ lang_bad = "Неизвестный язык. Доступны: {available}"
 lang_pick = "Выберите язык:"
 
 cmd_new_desc = "Начать новую сессию Claude"
+cmd_exit_desc = "Закрыть и удалить текущий топик сессии"
 cmd_cd_desc = "Задать рабочую папку для новых сессий"
 cmd_login_desc = "Авторизовать Claude на этом хосте"
 cmd_logout_desc = "Выйти из Claude"
 cmd_perm_desc = "Режим разрешений для новых сессий"
 cmd_lang_desc = "Сменить язык интерфейса"
 cmd_help_desc = "Показать справку"
+
+exit_no_topic = "Используйте /exit внутри топика сессии, чтобы удалить его."
+exit_cant_delete_system = "Системный топик удалять не буду."
+exit_failed = "Не удалось удалить топик: {detail}"
 
 err_generic = "Что-то пошло не так: {detail}"
 turn_crashed = "Сессия Claude упала; перезапускаю и повторяю ход."

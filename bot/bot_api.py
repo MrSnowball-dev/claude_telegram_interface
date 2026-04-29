@@ -85,6 +85,14 @@ class BotAPI:
             payload["icon_color"] = icon_color
         return await self._call("createForumTopic", payload)
 
+    async def delete_forum_topic(
+        self, *, chat_id: int, message_thread_id: int,
+    ) -> bool:
+        return bool(await self._call(
+            "deleteForumTopic",
+            {"chat_id": chat_id, "message_thread_id": message_thread_id},
+        ))
+
     async def send_message(
         self,
         *,

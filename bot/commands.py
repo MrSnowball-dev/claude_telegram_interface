@@ -13,6 +13,7 @@ log = logging.getLogger(__name__)
 # (command, locale-key-for-description). Keep aligned with handlers.py routing.
 COMMANDS: tuple[tuple[str, str], ...] = (
     ("new", "cmd_new_desc"),
+    ("exit", "cmd_exit_desc"),
     ("cd", "cmd_cd_desc"),
     ("login", "cmd_login_desc"),
     ("logout", "cmd_logout_desc"),

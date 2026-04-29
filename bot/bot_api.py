@@ -125,7 +125,10 @@ class BotAPI:
             payload["scope"] = scope
         if language_code:
             payload["language_code"] = language_code
-        return bool(await self._call("setMyCommands", payload))
+        # attempts=1 → don't sleep on rate-limit. setMyCommands has a strict
+        # quota that yields multi-minute retry_after values; the fingerprint
+        # cache in commands.py means we'll naturally retry on next restart.
+        return bool(await self._call("setMyCommands", payload, attempts=1))
 
     async def answer_callback_query(
         self, *, callback_query_id: str, text: str | None = None,

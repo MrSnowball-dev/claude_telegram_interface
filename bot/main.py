@@ -45,7 +45,7 @@ async def amain() -> None:
     log.info("connected as bot, allow-list size=%d", len(settings.allowed_user_ids))
 
     async with BotAPI(settings.bot_token) as bot_api:
-        await register_commands(bot_api)
+        await register_commands(bot_api, state)
         handlers = Handlers(
             client=client, settings=settings, state=state,
             registry=registry, bot_api=bot_api,

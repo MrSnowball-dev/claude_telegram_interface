@@ -34,6 +34,10 @@ CREATE TABLE IF NOT EXISTS drafts (
   thread_id INTEGER PRIMARY KEY,
   next_draft_id INTEGER NOT NULL DEFAULT 1
 );
+CREATE TABLE IF NOT EXISTS bot_kv (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_thread ON sessions(thread_id);
 """
@@ -212,6 +216,19 @@ class State:
         await self.conn.execute(
             "UPDATE sessions SET pending_text=NULL, pending_started_at=NULL "
             "WHERE session_id=?", (session_id,),
+        )
+        await self.conn.commit()
+
+    async def get_kv(self, key: str) -> str | None:
+        cur = await self.conn.execute("SELECT value FROM bot_kv WHERE key=?", (key,))
+        row = await cur.fetchone()
+        return row["value"] if row else None
+
+    async def set_kv(self, key: str, value: str) -> None:
+        await self.conn.execute(
+            "INSERT INTO bot_kv(key, value) VALUES(?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
         )
         await self.conn.commit()
 

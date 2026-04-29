@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import time
@@ -34,6 +35,15 @@ from .streaming import DraftStreamer
 log = logging.getLogger(__name__)
 
 _AUTH_CACHE_TTL = 30.0  # seconds
+
+
+def _token_fp(token: str | None) -> str:
+    """Last-4-char fingerprint of the OAuth token. ``setup-token`` doesn't
+    grant ``user:profile`` scope so we can't fetch the email. The fingerprint
+    matches the tail of what platform.claude.com showed the user."""
+    if not token:
+        return "?"
+    return token[-4:]
 
 
 @dataclass(slots=True)
@@ -92,6 +102,9 @@ class Handlers:
         pending = self._pending_logins.get(user_id)
         if pending is not None:
             await pending.queue.put(text)
+            # Wipe the secret from chat history so it doesn't linger.
+            with contextlib.suppress(Exception):
+                await event.delete()
             return
 
         if not await self._is_logged_in(user):
@@ -249,15 +262,9 @@ class Handlers:
             return
 
         if await self._is_logged_in(user, force=True):
-            status = await auth_status(
-                self.settings.claude_bin,
-                home=user_home_path(self.settings.data_dir, user.user_id),
-                token=user.oauth_token,
-            )
-            email = str(status.get("email", ""))
             await self._send(
                 chat_id,
-                t("login_already_authed", user.lang, email=email),
+                t("login_already_authed", user.lang, fp=_token_fp(user.oauth_token)),
                 thread_id=user.system_thread_id,
             )
             return
@@ -305,7 +312,7 @@ class Handlers:
                 self._auth_cache[user.user_id] = (time.monotonic(), True)
                 for sess in list(self.registry.iter_user(user.user_id)):
                     sess.oauth_token = token
-                await update(t("login_done", user.lang))
+                await update(t("login_done", user.lang, fp=_token_fp(token)))
             except LoginError as e:
                 log.warning("login failed: %s", e)
                 await update(t("login_failed", user.lang, detail=str(e)))

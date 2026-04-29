@@ -66,3 +66,5 @@ auth_required = "Claude is not authenticated on this host. Use /login."
 tool_call = "▸ {tool}: {summary}"
 thinking = "[thinking…]"
 streaming_truncated = "(streaming truncated; final message below)"
+
+service_restarted = "Service restarted. Send a message to continue."

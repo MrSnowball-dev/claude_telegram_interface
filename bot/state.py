@@ -153,10 +153,25 @@ class State:
 
     async def get_session_by_thread(self, thread_id: int) -> Session | None:
         cur = await self.conn.execute(
-            "SELECT * FROM sessions WHERE thread_id=? ORDER BY last_used DESC LIMIT 1", (thread_id,),
+            "SELECT * FROM sessions WHERE thread_id=? AND status != 'dead' "
+            "ORDER BY last_used DESC LIMIT 1", (thread_id,),
         )
         row = await cur.fetchone()
         return Session(**row) if row else None
+
+    async def get_alive_sessions(self) -> list[Session]:
+        """All sessions that haven't been explicitly closed via /exit. Used at
+        startup to notify each topic that the bot has come back online."""
+        cur = await self.conn.execute(
+            "SELECT * FROM sessions WHERE status != 'dead' ORDER BY last_used DESC"
+        )
+        rows = await cur.fetchall()
+        return [Session(**row) for row in rows]
+
+    async def get_user(self, user_id: int) -> User | None:
+        cur = await self.conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+        row = await cur.fetchone()
+        return User(**row) if row else None
 
     async def touch(self, session_id: str) -> None:
         await self.conn.execute(

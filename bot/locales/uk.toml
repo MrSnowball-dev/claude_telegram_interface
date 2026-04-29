@@ -66,3 +66,5 @@ auth_required = "Claude не авторизовано на цьому хості
 tool_call = "▸ {tool}: {summary}"
 thinking = "[розмірковую…]"
 streaming_truncated = "(стрімінг обрізано; нижче — фінальне повідомлення)"
+
+service_restarted = "Сервіс перезапущено. Надішліть повідомлення, щоб продовжити."

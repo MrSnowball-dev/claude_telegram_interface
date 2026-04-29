@@ -66,3 +66,5 @@ auth_required = "Claude не авторизован на этом хосте. И
 tool_call = "▸ {tool}: {summary}"
 thinking = "[размышляю…]"
 streaming_truncated = "(стриминг обрезан; ниже — финальное сообщение)"
+
+service_restarted = "Сервис перезапущен. Отправьте сообщение, чтобы продолжить."

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
 from dataclasses import dataclass
 
@@ -13,7 +14,8 @@ CREATE TABLE IF NOT EXISTS users (
   lang TEXT NOT NULL,
   cwd TEXT NOT NULL,
   perm_mode TEXT NOT NULL DEFAULT 'acceptEdits',
-  active_session_id TEXT
+  active_session_id TEXT,
+  system_thread_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS sessions (
   session_id TEXT PRIMARY KEY,
@@ -41,6 +43,7 @@ class User:
     cwd: str
     perm_mode: str
     active_session_id: str | None
+    system_thread_id: int | None = None
 
 
 @dataclass(slots=True)
@@ -70,6 +73,9 @@ class State:
         await conn.execute("PRAGMA journal_mode=WAL")
         await conn.execute("PRAGMA synchronous=NORMAL")
         await conn.executescript(_SCHEMA)
+        # Idempotent migration for DBs created before system_thread_id existed.
+        with contextlib.suppress(aiosqlite.OperationalError):
+            await conn.execute("ALTER TABLE users ADD COLUMN system_thread_id INTEGER")
         await conn.commit()
         return cls(conn)
 
@@ -105,6 +111,12 @@ class State:
     async def set_active_session(self, user_id: int, session_id: str | None) -> None:
         await self.conn.execute(
             "UPDATE users SET active_session_id=? WHERE user_id=?", (session_id, user_id),
+        )
+        await self.conn.commit()
+
+    async def set_system_thread(self, user_id: int, thread_id: int | None) -> None:
+        await self.conn.execute(
+            "UPDATE users SET system_thread_id=? WHERE user_id=?", (thread_id, user_id),
         )
         await self.conn.commit()
 

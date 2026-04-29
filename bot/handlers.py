@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass
 
@@ -26,10 +27,12 @@ from .login_pty import LoginError, auth_status, run_login
 from .permissions import normalize_perm_mode
 from .registry import SessionRegistry
 from .render import chunk_message, tool_summary
-from .state import State
+from .state import State, User
 from .streaming import DraftStreamer
 
 log = logging.getLogger(__name__)
+
+_AUTH_CACHE_TTL = 30.0  # seconds
 
 
 @dataclass(slots=True)
@@ -54,6 +57,7 @@ class Handlers:
         self.registry = registry
         self.bot_api = bot_api
         self._pending_logins: dict[int, _PendingLogin] = {}
+        self._auth_cache: tuple[float, bool] | None = None  # (timestamp, logged_in)
 
     # ---- registration -----------------------------------------------------
 
@@ -67,82 +71,136 @@ class Handlers:
         if sender is None or sender.bot:
             return
         user_id = int(sender.id)
+        chat_id = int(event.chat_id)
+
         if user_id not in self.settings.allowed_user_ids:
-            await self._reply(event, "not_allowed", "en")
+            await self._send(chat_id, t("not_allowed", "en"))
             return
 
         user = await self.state.get_or_create_user(
             user_id, pick_lang(getattr(sender, "lang_code", None)), self.settings.default_cwd,
         )
+        user = await self._ensure_system_thread(user, chat_id)
         text = (event.raw_text or "").strip()
 
         if text.startswith("/"):
             await self._handle_command(event, user, text)
             return
 
-        # Pending login takes precedence over routing to a session.
+        # Pending login takes precedence: a plain-text reply IS the verification code.
         pending = self._pending_logins.get(user_id)
         if pending is not None:
             await pending.queue.put(text)
+            return
+
+        if not await self._is_logged_in():
+            await self._send(chat_id, t("auth_required", user.lang), thread_id=user.system_thread_id)
             return
 
         await self._route_to_session(event, user, text)
 
     # ---- commands ---------------------------------------------------------
 
-    async def _handle_command(self, event: events.NewMessage.Event, user, text: str) -> None:
+    async def _handle_command(self, event: events.NewMessage.Event, user: User, text: str) -> None:
         cmd, _, rest = text.partition(" ")
         cmd = cmd.split("@", 1)[0].lower()
         rest = rest.strip()
 
-        if cmd == "/start" or cmd == "/help":
-            await self._send(event.chat_id, t("welcome" if cmd == "/start" else "help", user.lang))
-        elif cmd == "/new":
+        # Open commands — no auth required.
+        if cmd in ("/start", "/help"):
+            await self._send(
+                int(event.chat_id),
+                t("welcome" if cmd == "/start" else "help", user.lang),
+                thread_id=user.system_thread_id,
+            )
+            if cmd == "/start" and not await self._is_logged_in():
+                await self._send(
+                    int(event.chat_id),
+                    t("auth_required", user.lang),
+                    thread_id=user.system_thread_id,
+                )
+            return
+        if cmd == "/lang":
+            await self._cmd_lang(event, user, rest)
+            return
+        if cmd == "/login":
+            await self._cmd_login(event, user)
+            return
+
+        # Gated commands.
+        if not await self._is_logged_in():
+            await self._send(
+                int(event.chat_id), t("auth_required", user.lang),
+                thread_id=user.system_thread_id,
+            )
+            return
+
+        if cmd == "/new":
             await self._cmd_new(event, user)
         elif cmd == "/cd":
             await self._cmd_cd(event, user, rest)
-        elif cmd == "/login":
-            await self._cmd_login(event, user)
         elif cmd == "/perm":
             await self._cmd_perm(event, user, rest)
-        elif cmd == "/lang":
-            await self._cmd_lang(event, user, rest)
         else:
-            await self._send(event.chat_id, t("help", user.lang))
+            await self._send(
+                int(event.chat_id), t("help", user.lang), thread_id=user.system_thread_id,
+            )
 
-    async def _cmd_cd(self, event, user, rest: str) -> None:
+    async def _cmd_cd(self, event, user: User, rest: str) -> None:
         if not rest:
-            await self._send(event.chat_id, t("cd_missing", user.lang))
+            await self._send(
+                int(event.chat_id), t("cd_missing", user.lang), thread_id=user.system_thread_id,
+            )
             return
         path = os.path.realpath(rest)
         if not os.path.isdir(path) or not os.access(path, os.R_OK):
-            await self._send(event.chat_id, t("cd_bad", user.lang, path=path))
+            await self._send(
+                int(event.chat_id),
+                t("cd_bad", user.lang, path=path),
+                thread_id=user.system_thread_id,
+            )
             return
         await self.state.set_user_cwd(user.user_id, path)
-        await self._send(event.chat_id, t("cd_ok", user.lang, path=path))
+        await self._send(
+            int(event.chat_id),
+            t("cd_ok", user.lang, path=path),
+            thread_id=user.system_thread_id,
+        )
 
-    async def _cmd_perm(self, event, user, rest: str) -> None:
+    async def _cmd_perm(self, event, user: User, rest: str) -> None:
         mode = normalize_perm_mode(rest)
         if mode is None:
-            await self._send(event.chat_id, t("perm_bad", user.lang))
+            await self._send(
+                int(event.chat_id), t("perm_bad", user.lang),
+                thread_id=user.system_thread_id,
+            )
             return
         await self.state.set_user_perm(user.user_id, mode)
-        await self._send(event.chat_id, t("perm_set", user.lang, mode=mode))
+        await self._send(
+            int(event.chat_id),
+            t("perm_set", user.lang, mode=mode),
+            thread_id=user.system_thread_id,
+        )
 
-    async def _cmd_lang(self, event, user, rest: str) -> None:
+    async def _cmd_lang(self, event, user: User, rest: str) -> None:
         langs = available_languages()
         code = rest.lower().split("-", 1)[0]
         if code not in langs:
             await self._send(
-                event.chat_id,
+                int(event.chat_id),
                 t("lang_bad", user.lang, available=", ".join(sorted(langs))),
+                thread_id=user.system_thread_id,
             )
             return
         await self.state.set_user_lang(user.user_id, code)
-        await self._send(event.chat_id, t("lang_set", code, name=langs[code]))
+        await self._send(
+            int(event.chat_id),
+            t("lang_set", code, name=langs[code]),
+            thread_id=user.system_thread_id,
+        )
 
-    async def _cmd_new(self, event, user) -> None:
-        # Refresh user (cwd may have changed).
+    async def _cmd_new(self, event, user: User) -> None:
+        # Refresh user (cwd may have changed since dispatch).
         user = await self.state.get_or_create_user(user.user_id, user.lang, self.settings.default_cwd)
         chat_id = int(event.chat_id)
         try:
@@ -176,23 +234,37 @@ class Handlers:
             chat_id, t("session_new", user.lang, cwd=sess.cwd), thread_id=thread_id,
         )
 
-    async def _cmd_login(self, event, user) -> None:
+    async def _cmd_login(self, event, user: User) -> None:
         chat_id = int(event.chat_id)
         if user.user_id in self._pending_logins:
-            await self._send(chat_id, t("login_already", user.lang))
+            await self._send(
+                chat_id, t("login_already", user.lang), thread_id=user.system_thread_id,
+            )
             return
 
-        await self._send(chat_id, t("login_start", user.lang))
+        if await self._is_logged_in(force=True):
+            status = await auth_status(self.settings.claude_bin)
+            email = str(status.get("email", ""))
+            await self._send(
+                chat_id,
+                t("login_already_authed", user.lang, email=email),
+                thread_id=user.system_thread_id,
+            )
+            return
+
+        await self._send(
+            chat_id, t("login_start", user.lang), thread_id=user.system_thread_id,
+        )
         queue: asyncio.Queue[str] = asyncio.Queue()
+        sys_thread = user.system_thread_id
 
         async def send_url(url: str) -> None:
-            await self._send(chat_id, t("login_url", user.lang, url=url))
+            await self._send(
+                chat_id, t("login_url", user.lang, url=url), thread_id=sys_thread,
+            )
 
         async def await_code(timeout: float) -> str:
             return await asyncio.wait_for(queue.get(), timeout=timeout)
-
-        async def notify_invalid(left: int) -> None:
-            await self._send(chat_id, t("login_bad", user.lang, left=left))
 
         async def runner() -> None:
             try:
@@ -200,25 +272,70 @@ class Handlers:
                     claude_bin=self.settings.claude_bin,
                     send_url=send_url,
                     await_code=await_code,
-                    notify_invalid=notify_invalid,
                 )
-                await self._send(chat_id, t("login_done", user.lang))
+                self._auth_cache = (time.monotonic(), True)
+                await self._send(chat_id, t("login_done", user.lang), thread_id=sys_thread)
             except LoginError as e:
-                await self._send(chat_id, t("login_failed", user.lang, detail=str(e)))
+                log.warning("login failed: %s", e)
+                await self._send(
+                    chat_id, t("login_failed", user.lang, detail=str(e)),
+                    thread_id=sys_thread,
+                )
             except Exception as e:
                 log.exception("login flow crashed")
-                await self._send(chat_id, t("login_failed", user.lang, detail=repr(e)))
+                await self._send(
+                    chat_id, t("login_failed", user.lang, detail=repr(e)),
+                    thread_id=sys_thread,
+                )
             finally:
                 self._pending_logins.pop(user.user_id, None)
 
         task = asyncio.create_task(runner())
         self._pending_logins[user.user_id] = _PendingLogin(queue=queue, task=task)
 
+    # ---- auth gate --------------------------------------------------------
+
+    async def _is_logged_in(self, *, force: bool = False) -> bool:
+        now = time.monotonic()
+        if not force and self._auth_cache is not None:
+            ts, ok = self._auth_cache
+            if now - ts < _AUTH_CACHE_TTL:
+                return ok
+        status = await auth_status(self.settings.claude_bin)
+        ok = bool(status.get("loggedIn"))
+        self._auth_cache = (now, ok)
+        return ok
+
+    # ---- system thread ----------------------------------------------------
+
+    async def _ensure_system_thread(self, user: User, chat_id: int) -> User:
+        if user.system_thread_id is not None:
+            return user
+        try:
+            topic = await self.bot_api.create_forum_topic(
+                chat_id=chat_id, name=t("system_topic_name", user.lang),
+                icon_color=0x6FB9F0,
+            )
+        except BotAPIError as e:
+            log.warning("createForumTopic for system thread failed: %s", e)
+            return user
+        thread_id = int(topic["message_thread_id"])
+        await self.state.set_system_thread(user.user_id, thread_id)
+        user.system_thread_id = thread_id
+        return user
+
     # ---- session routing --------------------------------------------------
 
-    async def _route_to_session(self, event, user, text: str) -> None:
+    async def _route_to_session(self, event, user: User, text: str) -> None:
         chat_id = int(event.chat_id)
         thread_id = _extract_thread_id(event)
+
+        # Messages in the system topic are not session-bound; nudge the user.
+        if thread_id is not None and thread_id == user.system_thread_id:
+            await self._send(
+                chat_id, t("session_none", user.lang), thread_id=user.system_thread_id,
+            )
+            return
 
         session_row = None
         if thread_id is not None:
@@ -227,13 +344,9 @@ class Handlers:
             session_row = await self.state.get_session(user.active_session_id)
 
         if session_row is None:
-            await self._send(chat_id, t("session_none", user.lang), thread_id=thread_id)
-            return
-
-        # Confirm auth before spawning.
-        status = await auth_status(self.settings.claude_bin)
-        if not status.get("loggedIn"):
-            await self._send(chat_id, t("auth_required", user.lang), thread_id=thread_id)
+            await self._send(
+                chat_id, t("session_none", user.lang), thread_id=user.system_thread_id,
+            )
             return
 
         sess = self.registry.get(session_row.session_id)
@@ -246,18 +359,20 @@ class Handlers:
                 allowed_tools=self.settings.allowed_tools,
                 claude_bin=self.settings.claude_bin,
             )
-            # Existing session_id from DB → resume on first spawn.
-            sess._known = True  # noqa: SLF001
+            sess._known = True  # noqa: SLF001  -- existing session_id; resume on first spawn
             await self.registry.put(sess)
 
         await self.state.touch(session_row.session_id)
-        draft_id = await self.state.next_draft_id(thread_id) if thread_id is not None else 1
+        target_thread = session_row.thread_id
+        draft_id = (
+            await self.state.next_draft_id(target_thread) if target_thread is not None else 1
+        )
 
         await self._run_streamed_turn(
             session=sess,
             user_text=text,
             chat_id=chat_id,
-            thread_id=session_row.thread_id,
+            thread_id=target_thread,
             draft_id=draft_id,
             lang=user.lang,
         )
@@ -322,7 +437,7 @@ class Handlers:
             log.exception("turn crashed")
             await streamer.finalize(t("err_generic", lang, detail=repr(e)))
 
-    # ---- send helpers -----------------------------------------------------
+    # ---- send helper ------------------------------------------------------
 
     async def _send(self, chat_id: int, text: str, *, thread_id: int | None = None) -> None:
         try:
@@ -332,9 +447,6 @@ class Handlers:
         except BotAPIError as e:
             log.warning("send failed: %s", e)
 
-    async def _reply(self, event, key: str, lang: str, **fmt: object) -> None:
-        await self._send(int(event.chat_id), t(key, lang, **fmt))
-
 
 def _extract_thread_id(event) -> int | None:
     """Pull the forum-topic id from an incoming Telethon NewMessage event, if any."""
@@ -342,7 +454,6 @@ def _extract_thread_id(event) -> int | None:
     if rt is None:
         return None
     if getattr(rt, "forum_topic", False):
-        # Topic posts: top_id is the topic-creation message id (== Bot-API message_thread_id).
         return int(getattr(rt, "reply_to_top_id", None) or getattr(rt, "reply_to_msg_id", 0)) or None
     top = getattr(rt, "reply_to_top_id", None)
     return int(top) if top else None

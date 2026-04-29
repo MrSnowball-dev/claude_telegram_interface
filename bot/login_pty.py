@@ -1,5 +1,9 @@
 """Drive ``claude auth login`` from inside a PTY so the OAuth flow is reachable
-over Telegram. Native asyncio + stdlib ``pty`` (no pexpect dependency)."""
+over Telegram. Native asyncio + stdlib ``pty`` (no pexpect dependency).
+
+Confirmation is done by polling ``claude auth status`` rather than regex-matching
+the PTY output, which is fragile (URLs and prompts can themselves contain words
+like "error" / "fail")."""
 
 from __future__ import annotations
 
@@ -15,14 +19,13 @@ from collections.abc import Awaitable, Callable
 
 log = logging.getLogger(__name__)
 
-_URL_RE = re.compile(rb"https?://[^\s\x1b]+")
-_SUCCESS_RE = re.compile(rb"(?i)(success|logged\s+in|authenticated)")
-_ERROR_RE = re.compile(rb"(?i)(invalid|incorrect|error|failed)")
+_URL_RE = re.compile(rb"https?://[^\s\x1b\)]+")
 _ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[a-zA-Z]")
 
 URL_TIMEOUT = 30.0
 CODE_TIMEOUT = 600.0
-CONFIRM_TIMEOUT = 60.0
+CONFIRM_TIMEOUT = 45.0
+POLL_INTERVAL = 1.0
 
 
 class LoginError(RuntimeError):
@@ -43,11 +46,13 @@ async def auth_status(claude_bin: str) -> dict[str, object]:
 
 
 class PtyReader:
-    """Cumulative buffer fed from a master PTY fd; coroutines wait for regex matches."""
+    """Cumulative buffer fed from a master PTY fd. ``wait_for`` advances a cursor
+    so successive calls don't re-match earlier text."""
 
     def __init__(self, master_fd: int) -> None:
         self._fd = master_fd
         self._buf = bytearray()
+        self._cursor = 0
         self._cond = asyncio.Condition()
         self._closed = False
         loop = asyncio.get_running_loop()
@@ -64,7 +69,6 @@ class PtyReader:
             self._loop.remove_reader(self._fd)
         else:
             self._buf.extend(data)
-        # Notify under loop; create_task ensures we're inside a coroutine context.
         asyncio.create_task(self._notify())
 
     async def _notify(self) -> None:
@@ -75,14 +79,22 @@ class PtyReader:
         async def _waiter() -> re.Match[bytes]:
             async with self._cond:
                 while True:
-                    m = pattern.search(self._buf)
+                    m = pattern.search(self._buf, self._cursor)
                     if m:
+                        self._cursor = m.end()
                         return m
                     if self._closed:
                         raise LoginError("pty closed")
                     await self._cond.wait()
 
         return await asyncio.wait_for(_waiter(), timeout=timeout)
+
+    def advance_to_end(self) -> None:
+        """Drop everything written so far from future searches (call before sending input)."""
+        self._cursor = len(self._buf)
+
+    def snapshot(self) -> bytes:
+        return bytes(self._buf)
 
     def close(self) -> None:
         with contextlib.suppress(ValueError, RuntimeError):
@@ -94,12 +106,17 @@ async def run_login(
     claude_bin: str,
     send_url: Callable[[str], Awaitable[None]],
     await_code: Callable[[float], Awaitable[str]],
-    notify_invalid: Callable[[int], Awaitable[None]],
-    max_attempts: int = 3,
 ) -> None:
-    """Run an interactive login. Calls ``send_url`` once with the OAuth URL,
-    then loops up to ``max_attempts`` codes via ``await_code`` until the CLI
-    confirms success. Raises :class:`LoginError` on any unrecoverable failure."""
+    """Run a single OAuth login pass. Caller is responsible for retry by re-invoking.
+
+    Sends the OAuth URL via ``send_url``, awaits the code via ``await_code``, writes
+    it to the PTY, then polls ``claude auth status`` for confirmation. Raises
+    :class:`LoginError` on any failure.
+    """
+
+    pre = await auth_status(claude_bin)
+    if pre.get("loggedIn"):
+        return  # Caller should short-circuit before invoking; tolerate either way.
 
     master, slave = pty.openpty()
     try:
@@ -117,40 +134,37 @@ async def run_login(
         try:
             m = await reader.wait_for(_URL_RE, timeout=URL_TIMEOUT)
         except TimeoutError as e:
-            raise LoginError("timed out waiting for OAuth URL") from e
+            tail = reader.snapshot()[-400:].decode("utf-8", errors="replace")
+            raise LoginError(f"no OAuth URL printed; tail: {tail!r}") from e
 
         url = _ANSI_RE.sub(b"", m.group(0)).decode("utf-8", errors="replace").rstrip(".,)")
         await send_url(url)
 
-        for attempt in range(1, max_attempts + 1):
-            try:
-                code = await await_code(CODE_TIMEOUT)
-            except TimeoutError as e:
-                raise LoginError("timed out waiting for code") from e
+        try:
+            code = await await_code(CODE_TIMEOUT)
+        except TimeoutError as e:
+            raise LoginError("timed out waiting for code") from e
 
+        # Drop everything we've seen so far so the post-code wait doesn't get
+        # confused by the URL prompt's earlier text.
+        reader.advance_to_end()
+        try:
             os.write(master, (code.strip() + "\n").encode())
+        except OSError as e:
+            raise LoginError(f"could not write code to pty: {e}") from e
 
-            done, pending = await asyncio.wait(
-                {
-                    asyncio.create_task(reader.wait_for(_SUCCESS_RE, timeout=CONFIRM_TIMEOUT)),
-                    asyncio.create_task(reader.wait_for(_ERROR_RE, timeout=CONFIRM_TIMEOUT)),
-                },
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for t in pending:
-                t.cancel()
-
-            won = next(iter(done))
-            try:
-                match = won.result()
-            except (TimeoutError, LoginError) as e:
-                raise LoginError(f"no confirmation after code: {e}") from e
-
-            if _SUCCESS_RE.search(match.group(0)):
+        deadline = asyncio.get_running_loop().time() + CONFIRM_TIMEOUT
+        while True:
+            await asyncio.sleep(POLL_INTERVAL)
+            status = await auth_status(claude_bin)
+            if status.get("loggedIn"):
                 return
-            await notify_invalid(max_attempts - attempt)
-
-        raise LoginError("invalid code; out of attempts")
+            if proc.returncode is not None:
+                tail = reader.snapshot()[-400:].decode("utf-8", errors="replace")
+                raise LoginError(f"claude exited without auth (rc={proc.returncode}); tail: {tail!r}")
+            if asyncio.get_running_loop().time() >= deadline:
+                tail = reader.snapshot()[-400:].decode("utf-8", errors="replace")
+                raise LoginError(f"auth confirmation timed out; tail: {tail!r}")
     finally:
         reader.close()
         if proc.returncode is None:

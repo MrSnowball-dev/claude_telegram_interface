@@ -20,6 +20,9 @@ login_done = "Logged in."
 login_bad = "Invalid code, try again ({left} attempts left)."
 login_failed = "Login failed: {detail}"
 login_already = "A login is already in progress for you."
+login_already_authed = "Already authenticated as {email}."
+
+system_topic_name = "claude · system"
 
 perm_set = "Permission mode for new sessions: {mode}"
 perm_bad = "Unknown mode. Use one of: bypass, default, plan, acceptedits"

@@ -20,6 +20,9 @@ login_done = "Вхід виконано."
 login_bad = "Невірний код, спробуйте ще раз (залишилось спроб: {left})."
 login_failed = "Не вдалося увійти: {detail}"
 login_already = "У вас уже триває процес входу."
+login_already_authed = "Вже авторизовано як {email}."
+
+system_topic_name = "claude · система"
 
 perm_set = "Режим дозволів для нових сесій: {mode}"
 perm_bad = "Невідомий режим. Доступні: bypass, default, plan, acceptedits"

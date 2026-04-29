@@ -4,7 +4,7 @@ name = "Русский"
 [strings]
 welcome = "Привет. Я мост между Telegram и Claude Code на этой машине.\n\n/login — войти в Claude, /cd — выбрать рабочую папку, /new — начать сессию."
 not_allowed = "Вы не в списке разрешённых пользователей."
-help = "Команды:\n/new — начать новую сессию Claude (открывает топик)\n/cd <путь> — задать рабочую папку для новых сессий\n/login — авторизовать Claude на этом хосте\n/perm <bypass|default|plan|acceptedits> — режим разрешений для новых сессий\n/lang <en|ru|uk> — сменить язык\n/help — это сообщение"
+help = "Команды:\n/new — начать новую сессию Claude (открывает топик)\n/cd <путь> — задать рабочую папку для новых сессий\n/login — авторизовать Claude на этом хосте\n/logout — выйти из Claude на этом хосте\n/perm <bypass|default|plan|acceptedits> — режим разрешений для новых сессий\n/lang <en|ru|uk> — сменить язык\n/help — это сообщение"
 
 cd_ok = "Рабочая папка: {path}"
 cd_bad = "Путь недоступен: {path}"
@@ -21,6 +21,10 @@ login_bad = "Неверный код, попробуйте ещё раз (ост
 login_failed = "Не удалось войти: {detail}"
 login_already = "У вас уже идёт процесс входа."
 login_already_authed = "Уже авторизованы как {email}."
+
+logout_done = "Выход выполнен."
+logout_already = "Вы не авторизованы."
+logout_failed = "Не удалось выйти: {detail}"
 
 system_topic_name = "claude · система"
 

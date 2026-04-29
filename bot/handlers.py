@@ -126,6 +126,9 @@ class Handlers:
         if cmd == "/login":
             await self._cmd_login(event, user)
             return
+        if cmd == "/logout":
+            await self._cmd_logout(event, user)
+            return
 
         # Gated commands.
         if not await self._is_logged_in():
@@ -292,6 +295,35 @@ class Handlers:
 
         task = asyncio.create_task(runner())
         self._pending_logins[user.user_id] = _PendingLogin(queue=queue, task=task)
+
+    async def _cmd_logout(self, event, user: User) -> None:
+        chat_id = int(event.chat_id)
+        if not await self._is_logged_in(force=True):
+            await self._send(
+                chat_id, t("logout_already", user.lang),
+                thread_id=user.system_thread_id,
+            )
+            return
+
+        proc = await asyncio.create_subprocess_exec(
+            self.settings.claude_bin, "auth", "logout",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode == 0:
+            self._auth_cache = (time.monotonic(), False)
+            await self._send(
+                chat_id, t("logout_done", user.lang),
+                thread_id=user.system_thread_id,
+            )
+            return
+
+        detail = (stderr or stdout).decode(errors="replace").strip() or f"rc={proc.returncode}"
+        await self._send(
+            chat_id, t("logout_failed", user.lang, detail=detail),
+            thread_id=user.system_thread_id,
+        )
 
     # ---- auth gate --------------------------------------------------------
 

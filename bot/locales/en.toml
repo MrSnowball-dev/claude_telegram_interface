@@ -4,7 +4,7 @@ name = "English"
 [strings]
 welcome = "Hi. I bridge Telegram to Claude Code on this machine.\n\nUse /login to authenticate, /cd to choose a working directory, /new to start a session."
 not_allowed = "You are not on the allow-list."
-help = "Commands:\n/new — start a new Claude session (opens a topic)\n/cd <path> — set working directory for new sessions\n/login — authenticate Claude on this host\n/perm <bypass|default|plan|acceptedits> — permission mode for new sessions\n/lang <en|ru|uk> — override language\n/help — this message"
+help = "Commands:\n/new — start a new Claude session (opens a topic)\n/cd <path> — set working directory for new sessions\n/login — authenticate Claude on this host\n/logout — sign out of Claude on this host\n/perm <bypass|default|plan|acceptedits> — permission mode for new sessions\n/lang <en|ru|uk> — override language\n/help — this message"
 
 cd_ok = "Working directory set to {path}"
 cd_bad = "Path not accessible: {path}"
@@ -21,6 +21,10 @@ login_bad = "Invalid code, try again ({left} attempts left)."
 login_failed = "Login failed: {detail}"
 login_already = "A login is already in progress for you."
 login_already_authed = "Already authenticated as {email}."
+
+logout_done = "Logged out."
+logout_already = "Not logged in."
+logout_failed = "Logout failed: {detail}"
 
 system_topic_name = "claude · system"
 

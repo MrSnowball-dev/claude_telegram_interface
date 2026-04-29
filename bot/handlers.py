@@ -269,12 +269,18 @@ class Handlers:
         async def await_code(timeout: float) -> str:
             return await asyncio.wait_for(queue.get(), timeout=timeout)
 
+        async def on_code_received() -> None:
+            await self._send(
+                chat_id, t("login_checking", user.lang), thread_id=sys_thread,
+            )
+
         async def runner() -> None:
             try:
                 await run_login(
                     claude_bin=self.settings.claude_bin,
                     send_url=send_url,
                     await_code=await_code,
+                    on_code_received=on_code_received,
                 )
                 self._auth_cache = (time.monotonic(), True)
                 await self._send(chat_id, t("login_done", user.lang), thread_id=sys_thread)
